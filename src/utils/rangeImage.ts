@@ -81,8 +81,10 @@ export function computeInclinations(
   const inclinations = new Float32Array(height)
 
   if (calib.beamInclinationValues && calib.beamInclinationValues.length === height) {
+    // Values are stored ascending (min→max) but range image row 0 = max (top),
+    // so reverse to match the uniform convention (descending).
     for (let i = 0; i < height; i++) {
-      inclinations[i] = calib.beamInclinationValues[i]
+      inclinations[i] = calib.beamInclinationValues[height - 1 - i]
     }
   } else {
     // Uniform interpolation: row 0 = max, last row = min
@@ -98,16 +100,19 @@ export function computeInclinations(
 /**
  * Compute azimuth angles for each column of the range image.
  *
- * Column 0 = rear (azimuth ≈ π), center = forward (azimuth ≈ 0).
- * Azimuth spans a full 2π rotation.
+ * Matches Waymo SDK's `compute_range_image_polar()`:
+ *   ratio = (width - col - 0.5) / width
+ *   azimuth = (ratio * 2 - 1) * π - az_correction
+ *
+ * az_correction = atan2(extrinsic[1][0], extrinsic[0][0]) accounts for
+ * sensor yaw so that column→azimuth mapping is correct per sensor.
  */
-export function computeAzimuths(width: number): Float32Array {
+export function computeAzimuths(width: number, azCorrection: number): Float32Array {
   const azimuths = new Float32Array(width)
-  const PI2 = 2 * Math.PI
 
   for (let col = 0; col < width; col++) {
-    // Pixel 0 → π (rear), pixel center → 0 (front), full 2π rotation
-    azimuths[col] = PI2 * (1 - col / width) - Math.PI
+    const ratio = (width - col - 0.5) / width
+    azimuths[col] = (ratio * 2 - 1) * Math.PI - azCorrection
   }
 
   return azimuths
@@ -131,7 +136,9 @@ export function convertRangeImageToPointCloud(
 
   // Precompute angles
   const inclinations = computeInclinations(height, calibration)
-  const azimuths = computeAzimuths(width)
+  // az_correction = atan2(extrinsic[1][0], extrinsic[0][0]) — sensor yaw
+  const azCorrection = Math.atan2(calibration.extrinsic[4], calibration.extrinsic[0])
+  const azimuths = computeAzimuths(width, azCorrection)
 
   // Precompute trig tables
   const cosInc = new Float32Array(height)
@@ -200,18 +207,26 @@ export function convertRangeImageToPointCloud(
 // Multi-sensor merge
 // ---------------------------------------------------------------------------
 
+/** Result of converting all sensors — includes per-sensor breakdown. */
+export interface MultiSensorResult {
+  /** Merged point cloud (all sensors) */
+  merged: PointCloud
+  /** Per-sensor point clouds keyed by laser_name */
+  perSensor: Map<number, PointCloud>
+}
+
 /**
  * Convert range images from all 5 LiDAR sensors and merge into one point cloud.
  *
  * @param rangeImages - Map from laser_name → RangeImage
  * @param calibrations - Map from laser_name → LidarCalibration
- * @returns merged point cloud in vehicle frame
+ * @returns merged + per-sensor point clouds in vehicle frame
  */
 export function convertAllSensors(
   rangeImages: Map<number, RangeImage>,
   calibrations: Map<number, LidarCalibration>,
-): PointCloud {
-  const clouds: PointCloud[] = []
+): MultiSensorResult {
+  const perSensor = new Map<number, PointCloud>()
   let totalPoints = 0
 
   for (const [laserName, rangeImage] of rangeImages) {
@@ -221,17 +236,20 @@ export function convertAllSensors(
       continue
     }
     const cloud = convertRangeImageToPointCloud(rangeImage, calib)
-    clouds.push(cloud)
+    perSensor.set(laserName, cloud)
     totalPoints += cloud.pointCount
   }
 
   // Merge into single Float32Array
   const merged = new Float32Array(totalPoints * 4)
   let offset = 0
-  for (const cloud of clouds) {
+  for (const cloud of perSensor.values()) {
     merged.set(cloud.positions, offset)
     offset += cloud.pointCount * 4
   }
 
-  return { positions: merged, pointCount: totalPoints }
+  return {
+    merged: { positions: merged, pointCount: totalPoints },
+    perSensor,
+  }
 }

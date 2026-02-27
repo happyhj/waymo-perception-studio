@@ -143,6 +143,27 @@ export async function readRowRange(
 }
 
 // ---------------------------------------------------------------------------
+// Row-group-level batch reading
+// ---------------------------------------------------------------------------
+
+/**
+ * Read ALL rows from a specific row group.
+ *
+ * Parquet decompresses an entire row group in one pass anyway, so reading
+ * all 256 rows from RG costs the same as reading 5 rows.
+ * By caching every frame from the RG we eliminate 50× decompression waste.
+ */
+export async function readRowGroupRows(
+  pf: WaymoParquetFile,
+  rowGroupIndex: number,
+  columns?: string[],
+): Promise<ParquetRow[]> {
+  const rg = pf.rowGroups[rowGroupIndex]
+  if (!rg) return []
+  return readRowRange(pf, rg.rowStart, rg.rowEnd, columns)
+}
+
+// ---------------------------------------------------------------------------
 // Frame-level access helpers
 // ---------------------------------------------------------------------------
 

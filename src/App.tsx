@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useEffect, useCallback, useMemo } from 'react'
 import { useSceneStore } from './stores/useSceneStore'
 import LidarViewer from './components/LidarViewer/LidarViewer'
 
-type Tab = 'sensor' | 'gslab'
 
 // ---------------------------------------------------------------------------
 // Dev auto-load: known segment served by Vite plugin (serveWaymoData)
@@ -39,7 +38,6 @@ function useDevAutoLoad() {
 // ---------------------------------------------------------------------------
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('sensor')
   useDevAutoLoad()
 
   return (
@@ -54,11 +52,11 @@ function App() {
       overflow: 'hidden',
     }}>
       {/* Header */}
-      <Header activeTab={activeTab} onTabChange={setActiveTab} />
+      <Header />
 
       {/* Main Content */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {activeTab === 'sensor' ? <SensorView /> : <GSLabView />}
+        <SensorView />
       </main>
 
       {/* Timeline */}
@@ -78,7 +76,7 @@ function App() {
 // Header
 // ---------------------------------------------------------------------------
 
-function Header({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: Tab) => void }) {
+function Header() {
   const status = useSceneStore((s) => s.status)
   const totalFrames = useSceneStore((s) => s.totalFrames)
   const loadProgress = useSceneStore((s) => s.loadProgress)
@@ -102,34 +100,10 @@ function Header({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: T
       <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
         Waymo Perception Studio
       </h1>
-      <nav style={{ display: 'flex', gap: '4px' }}>
-        <TabButton label="Sensor View" active={activeTab === 'sensor'} onClick={() => onTabChange('sensor')} />
-        <TabButton label="3DGS Lab" active={activeTab === 'gslab'} onClick={() => onTabChange('gslab')} />
-      </nav>
       <div style={{ fontSize: '12px', opacity: 0.6 }}>
         {statusText}
       </div>
     </header>
-  )
-}
-
-function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: '4px 12px',
-        fontSize: '13px',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        backgroundColor: active ? '#0f3460' : 'transparent',
-        color: active ? '#e94560' : '#8892a0',
-        fontWeight: active ? 600 : 400,
-      }}
-    >
-      {label}
-    </button>
   )
 }
 
@@ -139,21 +113,11 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
 
 function SensorView() {
   const status = useSceneStore((s) => s.status)
-  const pointCount = useSceneStore((s) => s.currentFrame?.pointCloud?.pointCount ?? 0)
-  const lastConvertMs = useSceneStore((s) => s.lastConvertMs)
 
   return (
-    <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', gap: '2px', padding: '2px' }}>
-      {/* Camera Panel */}
-      <div style={{ backgroundColor: '#0f3460', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
-        Camera Views (5)
-      </div>
-      {/* BEV Panel */}
-      <div style={{ backgroundColor: '#0f3460', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
-        Bird's Eye View
-      </div>
-      {/* LiDAR 3D View - spans full width */}
-      <div style={{ borderRadius: '4px', gridColumn: '1 / -1', position: 'relative', overflow: 'hidden' }}>
+    <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      {/* LiDAR 3D View — full area */}
+      <div style={{ position: 'absolute', inset: 0 }}>
         {status === 'ready' ? (
           <LidarViewer />
         ) : status === 'loading' ? (
@@ -165,31 +129,7 @@ function SensorView() {
             3D LiDAR View
           </div>
         )}
-        {/* Overlay stats */}
-        {status === 'ready' && pointCount > 0 && (
-          <div style={{
-            position: 'absolute',
-            top: 8,
-            left: 8,
-            fontSize: '11px',
-            color: '#8892a0',
-            backgroundColor: 'rgba(22, 33, 62, 0.8)',
-            padding: '4px 8px',
-            borderRadius: '4px',
-            pointerEvents: 'none',
-          }}>
-            {pointCount.toLocaleString()} pts | {lastConvertMs.toFixed(1)}ms
-          </div>
-        )}
       </div>
-    </div>
-  )
-}
-
-function GSLabView() {
-  return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
-      3DGS Lab — Coming in Phase 4
     </div>
   )
 }
@@ -203,16 +143,21 @@ function Timeline() {
   const currentFrameIndex = useSceneStore((s) => s.currentFrameIndex)
   const totalFrames = useSceneStore((s) => s.totalFrames)
   const isPlaying = useSceneStore((s) => s.isPlaying)
-  const playbackSpeed = useSceneStore((s) => s.playbackSpeed)
   const cachedFrames = useSceneStore((s) => s.cachedFrames)
   const actions = useSceneStore((s) => s.actions)
 
   const disabled = status !== 'ready'
   const maxFrame = Math.max(totalFrames - 1, 0)
 
+  // Clamp slider to the highest cached frame — prevent jumping to unloaded area
+  const maxCached = cachedFrames.length > 0 ? cachedFrames[cachedFrames.length - 1] : 0
+
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    actions.seekFrame(parseInt(e.target.value, 10))
-  }, [actions])
+    const target = parseInt(e.target.value, 10)
+    if (target <= maxCached) {
+      actions.seekFrame(target)
+    }
+  }, [actions, maxCached])
 
   // Compute buffer bar segments (continuous ranges of cached frames)
   const bufferSegments = useMemo(() => {
@@ -235,27 +180,26 @@ function Timeline() {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px' }}>
-      <button
-        onClick={() => actions.prevFrame()}
-        disabled={disabled}
-        style={{ background: 'none', border: 'none', color: disabled ? '#4a5568' : '#e0e0e0', cursor: disabled ? 'default' : 'pointer', fontSize: '16px' }}
-      >
-        ◀
-      </button>
-      <button
-        onClick={() => actions.togglePlayback()}
-        disabled={disabled}
-        style={{ background: 'none', border: 'none', color: disabled ? '#4a5568' : '#e0e0e0', cursor: disabled ? 'default' : 'pointer', fontSize: '16px', width: '24px' }}
-      >
-        {isPlaying ? '⏸' : '▶'}
-      </button>
-      <button
-        onClick={() => actions.nextFrame()}
-        disabled={disabled}
-        style={{ background: 'none', border: 'none', color: disabled ? '#4a5568' : '#e0e0e0', cursor: disabled ? 'default' : 'pointer', fontSize: '16px' }}
-      >
-        ▶
-      </button>
+      {cachedFrames.length === 0 ? (
+        <div style={{
+          width: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '14px',
+          color: '#8892a0',
+        }}>
+          ⏳
+        </div>
+      ) : (
+        <button
+          onClick={() => actions.togglePlayback()}
+          disabled={disabled}
+          style={{ background: 'none', border: 'none', color: disabled ? '#4a5568' : '#e0e0e0', cursor: disabled ? 'default' : 'pointer', fontSize: '16px', width: '24px' }}
+        >
+          {isPlaying ? '⏸' : '▶'}
+        </button>
+      )}
 
       {/* Custom slider with buffer bar */}
       <div style={{ flex: 1, position: 'relative', height: '20px', display: 'flex', alignItems: 'center' }}>
@@ -265,12 +209,12 @@ function Timeline() {
           left: 0,
           right: 0,
           height: '4px',
-          backgroundColor: '#0f3460',
+          backgroundColor: '#1a2744',
           borderRadius: '2px',
           pointerEvents: 'none',
         }} />
 
-        {/* Buffer segments (YouTube-style gray bar) */}
+        {/* Buffer segments — loaded frames */}
         {bufferSegments.map((seg, i) => {
           const left = (seg.start / maxFrame) * 100
           const width = ((seg.end - seg.start + 1) / maxFrame) * 100
@@ -305,7 +249,7 @@ function Timeline() {
         <input
           type="range"
           min={0}
-          max={maxFrame}
+          max={maxCached}
           value={currentFrameIndex}
           onChange={handleSliderChange}
           disabled={disabled}
@@ -322,11 +266,8 @@ function Timeline() {
         />
       </div>
 
-      <span style={{ opacity: 0.6, fontSize: '12px', minWidth: '80px', textAlign: 'center' }}>
+      <span style={{ opacity: 0.6, fontSize: '12px', minWidth: '60px', textAlign: 'center' }}>
         {currentFrameIndex} / {maxFrame}
-      </span>
-      <span style={{ opacity: 0.6, fontSize: '12px' }}>
-        {playbackSpeed}x
       </span>
     </div>
   )

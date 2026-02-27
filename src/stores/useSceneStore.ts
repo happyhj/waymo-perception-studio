@@ -4,12 +4,13 @@
  * Heavy work (Parquet I/O + BROTLI decompress + LiDAR conversion) runs in
  * a Data Worker — main thread stays free for 60fps rendering.
  *
+ * Prefetch strategy: load ALL row groups sequentially (start → end).
+ * Each row group decompression yields ~51 frames at once — only 4 reads
+ * to cache the entire 199-frame segment.
+ *
  * Usage in React:
  *   const pointCloud = useSceneStore(s => s.currentFrame?.pointCloud)
  *   const { loadDataset, nextFrame } = useSceneStore(s => s.actions)
- *
- * Usage outside React:
- *   useSceneStore.getState().actions.nextFrame()
  */
 
 import { create } from 'zustand'
@@ -18,18 +19,26 @@ import { groupIndexBy } from '../utils/merge'
 import {
   openParquetFile,
   readAllRows,
+  readRowGroupRows,
   buildFrameIndex,
+  buildHeavyFileFrameIndex,
+  readFrameData,
   type WaymoParquetFile,
+  type FrameRowIndex,
 } from '../utils/parquet'
 import {
   parseLidarCalibration,
+  convertAllSensors,
   type LidarCalibration,
   type PointCloud,
+  type RangeImage,
 } from '../utils/rangeImage'
 import type {
   DataWorkerRequest,
   DataWorkerResponse,
-  DataWorkerFrameResult,
+  DataWorkerRowGroupResult,
+  FrameResult,
+  SensorCloudResult,
 } from '../workers/dataWorker'
 
 // ---------------------------------------------------------------------------
@@ -41,6 +50,8 @@ export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export interface FrameData {
   timestamp: bigint
   pointCloud: PointCloud | null
+  /** Per-sensor point clouds for toggle UI (keyed by laser_name: 1=TOP,2=FRONT,3=SIDE_LEFT,4=SIDE_RIGHT,5=REAR) */
+  sensorClouds: Map<number, PointCloud>
   boxes: ParquetRow[]
   cameraImages: Map<number, ArrayBuffer>
   vehiclePose: number[] | null
@@ -56,6 +67,7 @@ interface SceneActions {
   pause: () => void
   togglePlayback: () => void
   setPlaybackSpeed: (speed: number) => void
+  toggleSensor: (laserName: number) => void
   reset: () => void
 }
 
@@ -86,7 +98,8 @@ export interface SceneState {
   // Prefetch progress (for YouTube-style buffer bar)
   /** Sorted array of cached frame indices */
   cachedFrames: number[]
-
+  /** Which sensors are visible (1=TOP,2=FRONT,3=SIDE_LEFT,4=SIDE_RIGHT,5=REAR) */
+  visibleSensors: Set<number>
   // Actions
   actions: SceneActions
 }
@@ -98,29 +111,40 @@ export interface SceneState {
 const internal = {
   parquetFiles: new Map<string, WaymoParquetFile>(),
   timestamps: [] as bigint[],
+  /** Reverse lookup: timestamp → frame index */
+  timestampToFrame: new Map<bigint, number>(),
   lidarBoxByFrame: new Map<unknown, ParquetRow[]>(),
   vehiclePoseByFrame: new Map<unknown, ParquetRow[]>(),
+  /** No eviction needed — row-group loading caches all ~199 frames, which is the goal. */
   frameCache: new Map<number, FrameData>(),
-  prefetchInFlight: new Set<number>(),
   playIntervalId: null as ReturnType<typeof setInterval> | null,
   worker: null as Worker | null,
   workerReady: false,
+  numRowGroups: 0,
+  /** Track which row groups have been loaded or are in-flight */
+  loadedRowGroups: new Set<number>(),
+  /** Prevent duplicate prefetchAllRowGroups calls (React StrictMode) */
+  prefetchStarted: false,
+  /** Last per-frame conversion time (for performance tracking) */
+  lastConvertMs: 0,
+  /** Frame index for per-frame fallback (test env / no Worker) */
+  lidarFrameIndex: null as FrameRowIndex | null,
   pendingRequests: new Map<number, {
-    resolve: (result: DataWorkerFrameResult) => void
+    resolve: (result: DataWorkerRowGroupResult) => void
     reject: (err: Error) => void
   }>(),
   nextRequestId: 0,
-  CACHE_SIZE: 10,
-  PREFETCH_AHEAD: 3,
 }
 
 function resetInternal() {
   internal.parquetFiles.clear()
   internal.timestamps = []
+  internal.timestampToFrame.clear()
   internal.lidarBoxByFrame.clear()
   internal.vehiclePoseByFrame.clear()
   internal.frameCache.clear()
-  internal.prefetchInFlight.clear()
+  internal.loadedRowGroups.clear()
+  internal.prefetchStarted = false
   if (internal.playIntervalId !== null) {
     clearInterval(internal.playIntervalId)
     internal.playIntervalId = null
@@ -130,6 +154,7 @@ function resetInternal() {
     internal.worker = null
     internal.workerReady = false
   }
+  internal.numRowGroups = 0
   internal.pendingRequests.clear()
   internal.nextRequestId = 0
 }
@@ -142,18 +167,16 @@ function postToWorker(msg: DataWorkerRequest) {
   internal.worker?.postMessage(msg)
 }
 
-function requestWorkerFrame(
-  frameIndex: number,
-  timestamp: bigint,
-): Promise<DataWorkerFrameResult> {
+function requestRowGroup(
+  rowGroupIndex: number,
+): Promise<DataWorkerRowGroupResult> {
   return new Promise((resolve, reject) => {
     const requestId = internal.nextRequestId++
     internal.pendingRequests.set(requestId, { resolve, reject })
     postToWorker({
-      type: 'loadFrame',
+      type: 'loadRowGroup',
       requestId,
-      frameIndex,
-      timestamp: timestamp.toString(),
+      rowGroupIndex,
     })
   })
 }
@@ -161,10 +184,11 @@ function requestWorkerFrame(
 function handleWorkerMessage(e: MessageEvent<DataWorkerResponse>) {
   const msg = e.data
 
-  if (msg.type === 'frameReady' || msg.type === 'error') {
-    const pending = internal.pendingRequests.get(msg.requestId ?? -1)
+  if (msg.type === 'rowGroupReady' || msg.type === 'error') {
+    const rid = 'requestId' in msg ? msg.requestId : -1
+    const pending = internal.pendingRequests.get(rid ?? -1)
     if (pending) {
-      internal.pendingRequests.delete(msg.requestId!)
+      internal.pendingRequests.delete(rid!)
       if (msg.type === 'error') {
         pending.reject(new Error(msg.message))
       } else {
@@ -172,6 +196,46 @@ function handleWorkerMessage(e: MessageEvent<DataWorkerResponse>) {
       }
     }
   }
+}
+
+/** Cache all frames from a row group result into internal.frameCache */
+function cacheRowGroupFrames(
+  result: DataWorkerRowGroupResult,
+  set: (partial: Partial<SceneState>) => void,
+) {
+  for (const frame of result.frames) {
+    const timestamp = BigInt(frame.timestamp)
+    const frameIndex = internal.timestampToFrame.get(timestamp)
+    if (frameIndex === undefined) continue
+    if (internal.frameCache.has(frameIndex)) continue
+
+    const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
+    const poseRows = internal.vehiclePoseByFrame.get(timestamp)
+    const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
+
+    const sensorClouds = new Map<number, PointCloud>()
+    if (frame.sensorClouds) {
+      for (const sc of frame.sensorClouds) {
+        sensorClouds.set(sc.laserName, { positions: sc.positions, pointCount: sc.pointCount })
+      }
+    }
+
+    const frameData: FrameData = {
+      timestamp,
+      pointCloud: {
+        positions: frame.positions,
+        pointCount: frame.pointCount,
+      },
+      sensorClouds,
+      boxes,
+      cameraImages: new Map(),
+      vehiclePose,
+    }
+
+    internal.frameCache.set(frameIndex, frameData)
+  }
+
+  syncCachedFrames(set)
 }
 
 /** Update the cachedFrames state for the buffer bar UI */
@@ -199,6 +263,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   lastFrameLoadMs: 0,
   lastConvertMs: 0,
   cachedFrames: [],
+  visibleSensors: new Set([1, 2, 3, 4, 5]),
 
   actions: {
     loadDataset: async (sources) => {
@@ -233,10 +298,44 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 4. Load first frame (via worker — non-blocking)
-        await get().actions.loadFrame(0)
+        // 4. Load first frame
+        const rgT0 = performance.now()
+        if (internal.workerReady) {
+          // Worker path: load entire first row group → cache ~51 frames at once
+          await loadAndCacheRowGroup(0, set)
+        } else {
+          // Main-thread fallback: build lidar frame index, load single frame
+          const lidarPf = internal.parquetFiles.get('lidar')
+          if (lidarPf) {
+            internal.lidarFrameIndex = await buildHeavyFileFrameIndex(lidarPf)
+            await loadFrameMainThread(0, set, get)
+          }
+        }
+        const rgMs = performance.now() - rgT0
+
+        // Show first frame
+        const firstFrame = internal.frameCache.get(0)
+        if (firstFrame) {
+          set({
+            currentFrameIndex: 0,
+            currentFrame: firstFrame,
+            lastFrameLoadMs: rgMs,
+            lastConvertMs: internal.lastConvertMs,
+          })
+        }
 
         set({ status: 'ready', loadProgress: 1 })
+
+        // Auto-play after first segment loads
+        get().actions.play()
+
+        // 5. Prefetch remaining row groups in background (start → end)
+        //    Only when Worker is available — in test env, load on demand per loadFrame.
+        //    Guard against duplicate calls from React StrictMode re-renders.
+        if (internal.workerReady && !internal.prefetchStarted) {
+          internal.prefetchStarted = true
+          prefetchAllRowGroups(set, get)
+        }
       } catch (e) {
         set({
           status: 'error',
@@ -248,7 +347,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     loadFrame: async (frameIndex) => {
       if (frameIndex < 0 || frameIndex >= internal.timestamps.length) return
 
-      // Cache hit — instant
+      // Cache hit — instant (the common case after prefetch completes)
       const cached = internal.frameCache.get(frameIndex)
       if (cached) {
         set({
@@ -257,55 +356,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           lastFrameLoadMs: 0,
           lastConvertMs: cached.pointCloud ? get().lastConvertMs : 0,
         })
-        // Still prefetch ahead from new position
-        prefetchAhead(frameIndex, set)
         return
       }
 
-      const timestamp = internal.timestamps[frameIndex]
-      const t0 = performance.now()
-
-      // Request from worker (non-blocking — main thread stays free)
-      let pointCloud: PointCloud | null = null
-      let convertMs = 0
-
-      if (internal.workerReady) {
-        const result = await requestWorkerFrame(frameIndex, timestamp)
-        pointCloud = {
-          positions: result.positions,
-          pointCount: result.pointCount,
-        }
-        convertMs = result.convertMs
-      }
-
-      // Boxes + pose (already in memory from startup)
-      const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
-      const poseRows = internal.vehiclePoseByFrame.get(timestamp)
-      const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
-
-      const frameData: FrameData = {
-        timestamp,
-        pointCloud,
-        boxes,
-        cameraImages: new Map(),
-        vehiclePose,
-      }
-
-      // LRU cache
-      evictIfNeeded()
-      internal.frameCache.set(frameIndex, frameData)
-
-      set({
-        currentFrameIndex: frameIndex,
-        currentFrame: frameData,
-        lastFrameLoadMs: performance.now() - t0,
-        lastConvertMs: convertMs,
-      })
-
-      syncCachedFrames(set)
-
-      // Prefetch next N frames in background
-      prefetchAhead(frameIndex, set)
+      // Cache miss — frame not yet prefetched, ignore navigation.
+      // Prefetch loads all row groups sequentially; the frame will become
+      // available shortly. This avoids contention with the prefetch queue.
     },
 
     nextFrame: () => get().actions.loadFrame(get().currentFrameIndex + 1),
@@ -347,6 +403,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       if (wasPlaying) get().actions.play()
     },
 
+    toggleSensor: (laserName: number) => {
+      const prev = get().visibleSensors
+      const next = new Set(prev)
+      if (next.has(laserName)) next.delete(laserName)
+      else next.add(laserName)
+      set({ visibleSensors: next })
+    },
+
     reset: () => {
       get().actions.pause()
       resetInternal()
@@ -365,6 +429,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         lastFrameLoadMs: 0,
         lastConvertMs: 0,
         cachedFrames: [],
+        visibleSensors: new Set([1, 2, 3, 4, 5]),
       })
     },
   },
@@ -374,11 +439,106 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function evictIfNeeded() {
-  if (internal.frameCache.size >= internal.CACHE_SIZE) {
-    const oldest = internal.frameCache.keys().next().value!
-    internal.frameCache.delete(oldest)
+/**
+ * Find which row group index contains a given frame.
+ * Uses the lidar parquet file's row group boundaries + frame index mapping.
+ */
+function findRowGroupForFrame(frameIndex: number): number {
+  const lidarPf = internal.parquetFiles.get('lidar')
+  if (!lidarPf) return -1
+
+  const timestamp = internal.timestamps[frameIndex]
+  if (timestamp === undefined) return -1
+
+  // Each lidar row group has a rowStart..rowEnd range.
+  // We need to find which RG contains rows for this timestamp.
+  // Since frames are time-sorted and row groups are sequential,
+  // we can estimate: frameIndex / framesPerRG ≈ rowGroupIndex.
+  // But for safety, use the frame index's row mapping.
+  const totalFrames = internal.timestamps.length
+  const numRGs = lidarPf.rowGroups.length
+  const framesPerRG = Math.ceil(totalFrames / numRGs)
+  const estimated = Math.min(Math.floor(frameIndex / framesPerRG), numRGs - 1)
+  return estimated
+}
+
+const LIDAR_COLUMNS = [
+  'key.frame_timestamp_micros',
+  'key.laser_name',
+  '[LiDARComponent].range_image_return1.shape',
+  '[LiDARComponent].range_image_return1.values',
+]
+
+/** Load entire row group via Worker and cache all its frames. */
+async function loadAndCacheRowGroup(
+  rgIndex: number,
+  set: (partial: Partial<SceneState>) => void,
+): Promise<void> {
+  if (internal.loadedRowGroups.has(rgIndex)) return
+  internal.loadedRowGroups.add(rgIndex) // Mark as in-flight to prevent duplicates
+
+  try {
+    const result = await requestRowGroup(rgIndex)
+    cacheRowGroupFrames(result, set)
+  } catch {
+    // If loading failed, allow retry
+    internal.loadedRowGroups.delete(rgIndex)
   }
+}
+
+/**
+ * Main-thread fallback: load a SINGLE frame via per-frame row range.
+ * Used in test env / File-based sources where Worker is not available.
+ * Each call decompresses the full row group (wasteful), but only keeps
+ * 5 rows in memory — avoids OOM that row-group-level caching would cause.
+ */
+async function loadFrameMainThread(
+  frameIndex: number,
+  set: (partial: Partial<SceneState>) => void,
+  get: () => SceneState,
+): Promise<FrameData | null> {
+  const lidarPf = internal.parquetFiles.get('lidar')
+  if (!lidarPf || !internal.lidarFrameIndex) return null
+
+  const timestamp = internal.timestamps[frameIndex]
+  if (timestamp === undefined) return null
+
+  const lidarRows = await readFrameData(
+    lidarPf,
+    internal.lidarFrameIndex,
+    timestamp,
+    LIDAR_COLUMNS,
+  )
+
+  const rangeImages = new Map<number, RangeImage>()
+  for (const row of lidarRows) {
+    const laserName = row['key.laser_name'] as number
+    rangeImages.set(laserName, {
+      shape: row['[LiDARComponent].range_image_return1.shape'] as [number, number, number],
+      values: row['[LiDARComponent].range_image_return1.values'] as number[],
+    })
+  }
+
+  const ct0 = performance.now()
+  const result = convertAllSensors(rangeImages, get().lidarCalibrations)
+  internal.lastConvertMs = performance.now() - ct0
+
+  const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
+  const poseRows = internal.vehiclePoseByFrame.get(timestamp)
+  const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
+
+  const frameData: FrameData = {
+    timestamp,
+    pointCloud: result.merged,
+    sensorClouds: result.perSensor,
+    boxes,
+    cameraImages: new Map(),
+    vehiclePose,
+  }
+
+  internal.frameCache.set(frameIndex, frameData)
+  syncCachedFrames(set)
+  return frameData
 }
 
 async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
@@ -388,6 +548,7 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
     const rows = await readAllRows(posePf)
     const index = buildFrameIndex(rows)
     internal.timestamps = index.timestamps
+    internal.timestampToFrame = index.frameByTimestamp
     internal.vehiclePoseByFrame = groupIndexBy(rows, 'key.frame_timestamp_micros')
     set({ totalFrames: index.timestamps.length })
   }
@@ -428,8 +589,6 @@ async function initDataWorker(
 ) {
   const lidarSource = sources.get('lidar')
   if (!lidarSource || typeof lidarSource !== 'string') {
-    // Worker only supports URL-based sources for now
-    // File-based (drag & drop) will fall back to main-thread loading
     return
   }
 
@@ -442,7 +601,7 @@ async function initDataWorker(
     worker.onmessage = (e: MessageEvent<DataWorkerResponse>) => {
       if (e.data.type === 'ready') {
         internal.workerReady = true
-        // Switch to persistent handler
+        internal.numRowGroups = e.data.numRowGroups
         worker.onmessage = handleWorkerMessage
         resolve()
       } else if (e.data.type === 'error') {
@@ -454,7 +613,6 @@ async function initDataWorker(
 
     internal.worker = worker
 
-    // Serialize calibrations as entries (Map can't be postMessage'd)
     const calibEntries = [...get().lidarCalibrations.entries()]
 
     postToWorker({
@@ -466,65 +624,30 @@ async function initDataWorker(
 }
 
 // ---------------------------------------------------------------------------
-// Prefetching — load upcoming frames via worker in background
+// Row-group-level prefetching — load ALL row groups start → end
 // ---------------------------------------------------------------------------
 
-function prefetchAhead(
-  currentIndex: number,
+/**
+ * Sequentially load all row groups from the lidar file.
+ * Each RG yields ~51 frames — after 4 RGs, all 199 frames are cached.
+ * Sequential (not parallel) to avoid saturating bandwidth.
+ */
+/**
+ * Sequentially load all row groups from the lidar file via Worker.
+ * Each RG yields ~51 frames — after 4 RGs, all 199 frames are cached.
+ * Sequential (not parallel) to avoid saturating bandwidth.
+ */
+async function prefetchAllRowGroups(
   set: (partial: Partial<SceneState>) => void,
+  _get: () => SceneState,
 ) {
-  if (!internal.workerReady) return
+  for (let rg = 0; rg < internal.numRowGroups; rg++) {
+    if (internal.loadedRowGroups.has(rg)) continue
 
-  const total = internal.timestamps.length
-  for (let offset = 1; offset <= internal.PREFETCH_AHEAD; offset++) {
-    const idx = currentIndex + offset
-    if (idx >= total) break
-    if (internal.frameCache.has(idx)) continue
-    if (internal.prefetchInFlight.has(idx)) continue
-
-    internal.prefetchInFlight.add(idx)
-    prefetchFrame(idx, set).finally(() => {
-      internal.prefetchInFlight.delete(idx)
-    })
-  }
-}
-
-async function prefetchFrame(
-  frameIndex: number,
-  set: (partial: Partial<SceneState>) => void,
-) {
-  if (internal.frameCache.has(frameIndex)) return
-
-  const timestamp = internal.timestamps[frameIndex]
-  if (timestamp === undefined) return
-
-  try {
-    const result = await requestWorkerFrame(frameIndex, timestamp)
-
-    const pointCloud: PointCloud = {
-      positions: result.positions,
-      pointCount: result.pointCount,
+    try {
+      await loadAndCacheRowGroup(rg, set)
+    } catch {
+      // Non-critical: prefetch failure doesn't block user interaction
     }
-
-    // Boxes + pose (already in memory)
-    const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
-    const poseRows = internal.vehiclePoseByFrame.get(timestamp)
-    const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
-
-    const frameData: FrameData = {
-      timestamp,
-      pointCloud,
-      boxes,
-      cameraImages: new Map(),
-      vehiclePose,
-    }
-
-    evictIfNeeded()
-    internal.frameCache.set(frameIndex, frameData)
-
-    // Update UI buffer bar
-    syncCachedFrames(set)
-  } catch {
-    // Prefetch failure is non-critical — silently ignore
   }
 }

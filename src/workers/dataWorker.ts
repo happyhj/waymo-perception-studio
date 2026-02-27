@@ -1,8 +1,11 @@
 /**
  * Data Worker — runs Parquet I/O + LiDAR conversion off the main thread.
  *
- * Responsibilities: fetch (Range Request) → BROTLI decompress → Parquet decode → xyz conversion.
- * Main thread stays free for 60fps rendering.
+ * Key optimization: reads an entire Parquet **row group** in one shot.
+ * Parquet decompresses a full RG anyway (~256 rows, ~40 MB compressed),
+ * so reading 5 rows costs the same as reading 256.
+ * By processing the whole RG we cache ~51 frames per decompression pass —
+ * only 4 RG reads needed for the entire 199-frame segment.
  *
  * Architecture: thin orchestration layer. Actual logic lives in parquet.ts and rangeImage.ts.
  */
@@ -10,7 +13,7 @@
 import {
   openParquetFile,
   buildHeavyFileFrameIndex,
-  readFrameData,
+  readRowGroupRows,
   type WaymoParquetFile,
   type FrameRowIndex,
 } from '../utils/parquet'
@@ -39,27 +42,45 @@ export interface DataWorkerInit {
   calibrationEntries: [number, LidarCalibration][]
 }
 
-export interface DataWorkerLoadFrame {
-  type: 'loadFrame'
+export interface DataWorkerLoadRowGroup {
+  type: 'loadRowGroup'
   requestId: number
-  frameIndex: number
-  /** bigint serialized as string (postMessage doesn't support bigint) */
-  timestamp: string
+  rowGroupIndex: number
 }
 
-export type DataWorkerRequest = DataWorkerInit | DataWorkerLoadFrame
+export type DataWorkerRequest = DataWorkerInit | DataWorkerLoadRowGroup
 
-export interface DataWorkerFrameResult {
-  type: 'frameReady'
-  requestId: number
-  frameIndex: number
+/** Per-sensor point cloud within a frame */
+export interface SensorCloudResult {
+  laserName: number
   positions: Float32Array
   pointCount: number
+}
+
+/** A single converted frame within a row group batch */
+export interface FrameResult {
+  /** bigint timestamp serialized as string */
+  timestamp: string
+  positions: Float32Array
+  pointCount: number
+  /** Per-sensor breakdown for toggle UI */
+  sensorClouds: SensorCloudResult[]
   convertMs: number
+}
+
+export interface DataWorkerRowGroupResult {
+  type: 'rowGroupReady'
+  requestId: number
+  rowGroupIndex: number
+  frames: FrameResult[]
+  /** Total decompression + conversion time for the entire RG */
+  totalMs: number
 }
 
 export interface DataWorkerReady {
   type: 'ready'
+  /** Number of row groups in the lidar file */
+  numRowGroups: number
 }
 
 export interface DataWorkerError {
@@ -68,77 +89,133 @@ export interface DataWorkerError {
   message: string
 }
 
-export type DataWorkerResponse = DataWorkerReady | DataWorkerFrameResult | DataWorkerError
+export type DataWorkerResponse = DataWorkerReady | DataWorkerRowGroupResult | DataWorkerError
 
 // ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
 const LIDAR_COLUMNS = [
+  'key.frame_timestamp_micros',
   'key.laser_name',
   '[LiDARComponent].range_image_return1.shape',
   '[LiDARComponent].range_image_return1.values',
 ]
 
-self.onmessage = async (e: MessageEvent<DataWorkerRequest>) => {
-  const msg = e.data
+const post = self as unknown as {
+  postMessage(msg: DataWorkerResponse, transfer?: Transferable[]): void
+}
 
+// ---------------------------------------------------------------------------
+// Sequential queue — async onmessage can fire while previous await is pending,
+// causing concurrent processing. This queue ensures strict FIFO ordering.
+// ---------------------------------------------------------------------------
+
+let processing = false
+const queue: DataWorkerRequest[] = []
+
+async function processQueue() {
+  if (processing) return
+  processing = true
+
+  while (queue.length > 0) {
+    const msg = queue.shift()!
+    await handleMessage(msg)
+  }
+
+  processing = false
+}
+
+async function handleMessage(msg: DataWorkerRequest) {
   try {
     if (msg.type === 'init') {
-      // Open lidar parquet file and build frame index
       lidarPf = await openParquetFile('lidar', msg.lidarUrl)
       lidarIndex = await buildHeavyFileFrameIndex(lidarPf)
-
-      // Reconstruct calibration Map
       calibrations = new Map(msg.calibrationEntries)
-
-      ;(self as unknown as { postMessage(msg: DataWorkerResponse): void })
-        .postMessage({ type: 'ready' })
+      post.postMessage({
+        type: 'ready',
+        numRowGroups: lidarPf.rowGroups.length,
+      })
+      return
     }
 
-    if (msg.type === 'loadFrame') {
+    if (msg.type === 'loadRowGroup') {
       if (!lidarPf || !lidarIndex) {
         throw new Error('Worker not initialized')
       }
 
-      const timestamp = BigInt(msg.timestamp)
+      const t0 = performance.now()
 
-      // Read lidar rows for this frame
-      const lidarRows = await readFrameData(lidarPf, lidarIndex, timestamp, LIDAR_COLUMNS)
+      // 1. Read entire row group — one decompression pass
+      const allRows = await readRowGroupRows(lidarPf, msg.rowGroupIndex, LIDAR_COLUMNS)
 
-      const rangeImages = new Map<number, RangeImage>()
-      for (const row of lidarRows) {
-        const laserName = row['key.laser_name'] as number
-        rangeImages.set(laserName, {
-          shape: row['[LiDARComponent].range_image_return1.shape'] as [number, number, number],
-          values: row['[LiDARComponent].range_image_return1.values'] as number[],
+      // 2. Group rows by frame timestamp
+      const frameGroups = new Map<bigint, typeof allRows>()
+      for (const row of allRows) {
+        const ts = row['key.frame_timestamp_micros'] as bigint
+        let group = frameGroups.get(ts)
+        if (!group) {
+          group = []
+          frameGroups.set(ts, group)
+        }
+        group.push(row)
+      }
+
+      // 3. Convert each frame's range images → xyz point cloud
+      const frames: FrameResult[] = []
+      const transferBuffers: ArrayBuffer[] = []
+
+      for (const [ts, rows] of frameGroups) {
+        const rangeImages = new Map<number, RangeImage>()
+        for (const row of rows) {
+          const laserName = row['key.laser_name'] as number
+          rangeImages.set(laserName, {
+            shape: row['[LiDARComponent].range_image_return1.shape'] as [number, number, number],
+            values: row['[LiDARComponent].range_image_return1.values'] as number[],
+          })
+        }
+
+        const ct0 = performance.now()
+        const result = convertAllSensors(rangeImages, calibrations)
+        const convertMs = performance.now() - ct0
+
+        const sensorClouds: SensorCloudResult[] = []
+        for (const [laserName, cloud] of result.perSensor) {
+          sensorClouds.push({ laserName, positions: cloud.positions, pointCount: cloud.pointCount })
+          transferBuffers.push(cloud.positions.buffer)
+        }
+
+        frames.push({
+          timestamp: ts.toString(),
+          positions: result.merged.positions,
+          pointCount: result.merged.pointCount,
+          sensorClouds,
+          convertMs,
         })
+
+        transferBuffers.push(result.merged.positions.buffer)
       }
 
-      const ct0 = performance.now()
-      const pointCloud = convertAllSensors(rangeImages, calibrations)
-      const convertMs = performance.now() - ct0
+      const totalMs = performance.now() - t0
 
-      const result: DataWorkerFrameResult = {
-        type: 'frameReady',
+      post.postMessage({
+        type: 'rowGroupReady',
         requestId: msg.requestId,
-        frameIndex: msg.frameIndex,
-        positions: pointCloud.positions,
-        pointCount: pointCloud.pointCount,
-        convertMs,
-      }
-
-      // Transfer the Float32Array buffer (zero-copy)
-      ;(self as unknown as { postMessage(msg: DataWorkerResponse, transfer: Transferable[]): void })
-        .postMessage(result, [pointCloud.positions.buffer])
+        rowGroupIndex: msg.rowGroupIndex,
+        frames,
+        totalMs,
+      }, transferBuffers)
     }
   } catch (err) {
-    const errorMsg: DataWorkerError = {
+    post.postMessage({
       type: 'error',
-      requestId: (msg as DataWorkerLoadFrame).requestId,
+      requestId: (msg as DataWorkerLoadRowGroup).requestId,
       message: err instanceof Error ? err.message : String(err),
-    }
-    ;(self as unknown as { postMessage(msg: DataWorkerResponse): void })
-      .postMessage(errorMsg)
+    })
   }
+}
+
+self.onmessage = (e: MessageEvent<DataWorkerRequest>) => {
+  queue.push(e.data)
+  processQueue()
 }

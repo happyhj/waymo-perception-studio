@@ -1,14 +1,17 @@
 /**
  * PointCloud renderer — single draw call for ~168K points.
  *
- * Uses InterleavedBufferAttribute to read [x,y,z] directly from the
- * store's Float32Array ([x,y,z,intensity] stride-4 layout) without copying.
+ * Supports per-sensor visibility toggle via store's visibleSensors set.
+ * When all sensors visible, uses pre-merged buffer (zero copy).
+ * When some hidden, merges only visible sensor clouds on the fly.
+ *
  * Intensity is mapped to a turbo-like colormap for visual clarity.
  */
 
 import { useRef, useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { useSceneStore } from '../../stores/useSceneStore'
+import type { PointCloud as PointCloudType } from '../../utils/rangeImage'
 
 // ---------------------------------------------------------------------------
 // Turbo colormap (simplified 8-stop LUT, linearly interpolated)
@@ -38,6 +41,15 @@ function turboColor(t: number): [number, number, number] {
   ]
 }
 
+// Sensor color map for per-sensor coloring mode
+const SENSOR_COLORS: Record<number, [number, number, number]> = {
+  1: [1.0, 0.3, 0.3],   // TOP — red
+  2: [0.3, 1.0, 0.3],   // FRONT — green
+  3: [0.3, 0.5, 1.0],   // SIDE_LEFT — blue
+  4: [1.0, 0.8, 0.2],   // SIDE_RIGHT — yellow
+  5: [0.8, 0.3, 1.0],   // REAR — purple
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -45,9 +57,16 @@ function turboColor(t: number): [number, number, number] {
 /** Maximum points we'll ever allocate buffers for (avoids realloc). */
 const MAX_POINTS = 200_000
 
+/** All 5 sensor IDs */
+const ALL_SENSORS = new Set([1, 2, 3, 4, 5])
+
 export default function PointCloud() {
-  const pointCloud = useSceneStore((s) => s.currentFrame?.pointCloud)
+  const currentFrame = useSceneStore((s) => s.currentFrame)
+  const visibleSensors = useSceneStore((s) => s.visibleSensors)
   const geometryRef = useRef<THREE.BufferGeometry>(null)
+
+  // Check if all sensors visible (fast path — use pre-merged buffer)
+  const allVisible = visibleSensors.size === ALL_SENSORS.size
 
   // Pre-allocate position & color buffers once
   const { posAttr, colorAttr } = useMemo(() => {
@@ -58,43 +77,77 @@ export default function PointCloud() {
     return { posAttr: pos, colorAttr: col }
   }, [])
 
-  // Update geometry when pointCloud changes
+  // Update geometry when pointCloud or visibleSensors changes
   useEffect(() => {
     const geom = geometryRef.current
-    if (!geom) return
-
-    if (!pointCloud || pointCloud.pointCount === 0) {
-      geom.setDrawRange(0, 0)
+    if (!geom || !currentFrame) {
+      if (geom) geom.setDrawRange(0, 0)
       return
     }
 
-    const { positions, pointCount } = pointCloud
-    const count = Math.min(pointCount, MAX_POINTS)
     const posArr = posAttr.array as Float32Array
     const colArr = colorAttr.array as Float32Array
 
-    // Extract xyz from stride-4 layout [x, y, z, intensity, x, y, z, intensity, ...]
-    // and build color from intensity
-    for (let i = 0; i < count; i++) {
-      const src = i * 4
-      const dst = i * 3
-      posArr[dst] = positions[src]       // x
-      posArr[dst + 1] = positions[src + 1] // y
-      posArr[dst + 2] = positions[src + 2] // z
+    if (allVisible) {
+      // Fast path: use pre-merged buffer, turbo colormap
+      const pc = currentFrame.pointCloud
+      if (!pc || pc.pointCount === 0) {
+        geom.setDrawRange(0, 0)
+        return
+      }
+      const { positions, pointCount } = pc
+      const count = Math.min(pointCount, MAX_POINTS)
 
-      // Intensity is in channel 3, typically 0–1 range (already normalized by conversion)
-      const intensity = positions[src + 3]
-      const [r, g, b] = turboColor(intensity)
-      colArr[dst] = r
-      colArr[dst + 1] = g
-      colArr[dst + 2] = b
+      for (let i = 0; i < count; i++) {
+        const src = i * 4
+        const dst = i * 3
+        posArr[dst] = positions[src]
+        posArr[dst + 1] = positions[src + 1]
+        posArr[dst + 2] = positions[src + 2]
+        const [r, g, b] = turboColor(positions[src + 3])
+        colArr[dst] = r
+        colArr[dst + 1] = g
+        colArr[dst + 2] = b
+      }
+
+      posAttr.needsUpdate = true
+      colorAttr.needsUpdate = true
+      geom.setDrawRange(0, count)
+      geom.computeBoundingSphere()
+    } else {
+      // Filtered path: merge only visible sensors, color by sensor
+      const sensorClouds = currentFrame.sensorClouds
+      if (!sensorClouds || sensorClouds.size === 0) {
+        geom.setDrawRange(0, 0)
+        return
+      }
+
+      let total = 0
+      for (const [laserName, cloud] of sensorClouds) {
+        if (!visibleSensors.has(laserName)) continue
+        const count = Math.min(cloud.pointCount, MAX_POINTS - total)
+        const color = SENSOR_COLORS[laserName] ?? [0.5, 0.5, 0.5]
+        const { positions } = cloud
+
+        for (let i = 0; i < count; i++) {
+          const src = i * 4
+          const dst = (total + i) * 3
+          posArr[dst] = positions[src]
+          posArr[dst + 1] = positions[src + 1]
+          posArr[dst + 2] = positions[src + 2]
+          colArr[dst] = color[0]
+          colArr[dst + 1] = color[1]
+          colArr[dst + 2] = color[2]
+        }
+        total += count
+      }
+
+      posAttr.needsUpdate = true
+      colorAttr.needsUpdate = true
+      geom.setDrawRange(0, total)
+      geom.computeBoundingSphere()
     }
-
-    posAttr.needsUpdate = true
-    colorAttr.needsUpdate = true
-    geom.setDrawRange(0, count)
-    geom.computeBoundingSphere()
-  }, [pointCloud, posAttr, colorAttr])
+  }, [currentFrame, visibleSensors, allVisible, posAttr, colorAttr])
 
   return (
     <points frustumCulled={false}>
