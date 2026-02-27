@@ -429,6 +429,21 @@ Chronological record of technical decisions and the reasoning behind them.
 - **Why this is good for us**: BROTLI was originally designed by Google for web content delivery (`Content-Encoding: br`). Browser-native support exists for HTTP streams. The JS WASM decompressor in hyparquet-compressors is well-optimized. So Waymo's infrastructure choice accidentally aligns perfectly with browser-based access.
 - **Impact**: Must pass `compressors` option to all `parquetReadObjects()` calls. Added to `parquet.ts` as default. ~3KB additional dependency.
 
+### D17. CPU 변환 성능 regression guard — `lastConvertMs < 50ms`
+- **목적**: `convertAllSensors()` (range image → xyz) 알고리즘 변경 시 성능 퇴행을 로컬 테스트에서 자동 감지.
+- **측정 기준**: M2 MacBook Air에서 5 센서 ~168K 포인트 기준 ~5ms. Threshold은 10배 마진인 50ms.
+- **적용 위치**: `useSceneStore.test.ts`의 frame 로딩 테스트 (`nextFrame`, `seekFrame`, `first frame timing`)에 `expect(lastConvertMs).toBeLessThan(50)` assertion.
+- **감지 불가능한 것**: Parquet I/O 성능 (8초 중 5ms만 변환이므로 I/O 노이즈에 묻힘). GPU 변환 (Dawn 소프트웨어 렌더러는 비현실적, 브라우저 프로파일링 필요).
+- **보완**: `rangeImageBenchmark.test.ts`에서 순수 변환만 5회 반복 평균 측정 가능 (기본 vitest run에서 제외, 수동 실행).
+
+### D16. State management → Zustand
+- **Alternatives considered**: (A) Zustand, (B) `useSyncExternalStore` + TS class, (C) Context + `useReducer`
+- **Reasoning**:
+  - **(C) Context 탈락**: 상태 하나 바뀌면 트리 전체 리렌더. 168K 포인트 매 프레임 업데이트하는 이 프로젝트에서 치명적.
+  - **(B) `useSyncExternalStore` 검토**: 의존성 제로, 면접 임팩트. 그러나 subscribe/emit/getSnapshot 보일러플레이트가 커짐. Zustand 내부도 `useSyncExternalStore` 기반이므로 성능 동일하면서 코드가 훨씬 심플.
+  - **(A) Zustand 채택**: selector 기반 슬라이스 구독으로 불필요한 리렌더 없음. React 밖에서 `getState()` 접근 가능 (Worker 결과 반영 등). ~1KB. 보일러플레이트 최소. 나중에 `devtools`/`persist` middleware 필요하면 한 줄 추가로 끝.
+- **구현**: `useSceneStore` — Zustand store에 state + actions 통합. 내부 데이터(Parquet files, frame indices, cache)는 모듈 스코프에 분리하여 React 리렌더에서 제외.
+
 ## 11. Next Actions
 
 1. ✅ Project scaffolding (Vite + React + TS + R3F)
