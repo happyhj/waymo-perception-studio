@@ -48,10 +48,70 @@ Key columns: `key.segment_context_name`, `key.frame_timestamp_micros`, `key.lase
 | SIDE_RIGHT | 4 | 200 × 600 × 4 | 120,000 |
 | REAR | 5 | 200 × 600 × 4 | 120,000 |
 
-- 4 channels = [range, intensity, elongation, ??]
+- 4 channels = [range, intensity, elongation, is_in_no_label_zone]
 - Total ~649K range pixels/frame (valid points fewer — filter range > 0)
-- Conversion: spherical → cartesian using `lidar_calibration` beam inclination + extrinsic
-- `lidar_pose` provides per-point ego-motion correction (same range image shape)
+- Two returns per pulse: `range_image_return1` (primary) and `range_image_return2` (secondary reflection). MVP uses return1 only.
+
+#### Range Image → XYZ Conversion Math
+
+Source: Official Waymo SDK `lidar_utils.convert_range_image_to_point_cloud()` and GitHub issues #656, #51, #307, #863.
+
+**Step 1: Compute inclination and azimuth per pixel**
+
+- **Inclination** (vertical angle):
+  - TOP LiDAR: **non-uniform** — `lidar_calibration` provides a `beam_inclination.values` array (64 exact angles, one per row).
+  - Other 4 LiDARs: **uniform** — only `beam_inclination.min` and `beam_inclination.max` provided. Linear interpolation: `inclination = max - (row / height) * (max - min)` (row 0 = top = max angle).
+- **Azimuth** (horizontal angle):
+  - `azimuth = azimuth_offset + (col / width) * 2π`
+  - Column 0 = rear direction (azimuth ≈ π), center column = forward (azimuth ≈ 0).
+
+**Step 2: Spherical → Cartesian**
+
+```
+x = range × cos(inclination) × cos(azimuth)
+y = range × cos(inclination) × sin(azimuth)
+z = range × sin(inclination)
+```
+
+Skip pixels where `range <= 0` (invalid).
+
+**Step 3: Extrinsic transform (sensor frame → vehicle frame)**
+
+Apply 4×4 extrinsic matrix from `lidar_calibration`:
+```
+[x_v, y_v, z_v, 1]ᵀ = extrinsic × [x, y, z, 1]ᵀ
+```
+
+**Step 4: Per-point ego-motion correction (TOP only)**
+
+`lidar_pose` provides a per-pixel vehicle pose for the TOP LiDAR to correct rolling shutter distortion. Other 4 LiDARs don't need this (their sweep is fast enough). For MVP, this step can be deferred — the visual difference is subtle.
+
+#### Conversion Strategy: WebGPU Compute Shader + CPU Web Worker Fallback
+
+The conversion is **embarrassingly parallel** — each pixel is independent (cos, sin, matrix mul). Two implementations:
+
+- **WebGPU Compute Shader** (primary): 649K pixels as GPU threads. Expected ~1-2ms/frame. Available in Chrome, Edge, Safari 17.4+.
+- **CPU Web Worker** (fallback): For Firefox and older browsers. Expected ~30-50ms/frame.
+
+Both paths share the same math; only the execution environment differs. Benchmark comparison in README demonstrates the speedup.
+
+```
+src/utils/rangeImage.ts        ← Pure conversion math (shared, testable)
+src/workers/lidarWorker.ts     ← CPU fallback (Web Worker)
+src/utils/rangeImageGpu.ts     ← WebGPU compute shader
+src/hooks/useLidarConverter.ts ← Auto-selects GPU or Worker
+```
+
+#### Gotchas from Waymo SDK Issues
+
+- **#656**: beam_inclination.values can be null for uniform sensors — always check before using.
+- **#307**: Raw data is already corrected to vehicle frame — don't apply additional azimuth corrections.
+- **#863**: When merging DataFrames, laser_name must match between lidar and lidar_calibration.
+- **#51**: range_image_top_pose is per-pixel, not per-frame — only TOP LiDAR has this.
+
+#### Reference: erksch viewer (v1.0)
+
+erksch doesn't do this conversion in the browser at all. Python server calls `frame_utils.convert_range_image_to_point_cloud()` (official Waymo util with TensorFlow), converts to xyz, then sends `[x, y, z, intensity, laser_id, label]` as Float32 binary over WebSocket. Our project does this **entirely in the browser** — no Python, no TensorFlow.
 
 ### Camera
 
@@ -225,13 +285,14 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 
 ## 8. Performance Notes
 
-- LiDAR range image → xyz: Web Worker (CPU intensive, ~649K pixels/frame)
+- LiDAR range image → xyz: WebGPU Compute Shader (~1-2ms) with CPU Web Worker fallback (~30-50ms)
 - Point cloud: BufferGeometry + Points
 - Bounding boxes: InstancedMesh (avg 94/frame)
 - Lazy frame loading: current ± N frames in memory, prefetch ahead
 - camera_image/lidar: row-group random access, never full file
 - Calibrations + boxes + poses: full load at startup (<2MB total)
 - Perf-critical rendering: useFrame + imperative refs
+- WebGPU availability: Chrome 113+, Edge 113+, Safari 17.4+. Firefox fallback to Web Worker.
 
 ## 9. Interview Narrative
 
@@ -329,6 +390,39 @@ Chronological record of technical decisions and the reasoning behind them.
 - **Our approach**: Port v2.merge() to TypeScript. `vehicle_pose` (199 rows) provides master frame list. All other components join via `key.frame_timestamp_micros` + optional `key.camera_name` / `key.laser_name`.
 - **Interview angle**: "I studied the official Waymo v2 Python SDK's merge strategy and ported it to TypeScript for browser-native use — same relational join pattern, zero Python dependency."
 
+### D15. Real Data Observations — Range Image Conversion
+
+실제 Waymo v2.0 데이터로 range image → xyz 변환을 구현하면서 발견한 사실들:
+
+**Range image format**:
+- Values는 `number[]` (not Float32Array). hyparquet가 Parquet의 float list를 JS Array로 디코딩함.
+- 4 channels [range, intensity, elongation, nlz] 이 flat array로 인터리브됨: `[r0, i0, e0, n0, r1, i1, e1, n1, ...]`
+- Shape은 `[height, width, channels]` = `[64, 2650, 4]` for TOP → 169,600 pixels × 4 values = 678,400 elements.
+
+**Valid pixel ratio**:
+- TOP lidar: 149,796 valid (range > 0) out of 169,600 total → **88.3%** valid.
+- Invalid pixels have `range = -1` (not `0`). Filter condition `range > 0` correctly handles both.
+- First ~32 pixels in row 0 are typically invalid (very top of FOV, sky region).
+
+**Spatial distribution (vehicle frame)**:
+- Range: 2.3m ~ 75m (this segment, SF downtown).
+- X/Y: max distance ~75m from vehicle center, reasonable for urban lidar.
+- **Z range: -20m ~ +30m** — much wider than the naïve expectation of "ground at -2m, buildings at +10m". SF downtown has steep hills, underground parking ramp exits visible to lidar, and tall buildings/overpasses. Test thresholds adjusted to `[-25, +40]`.
+
+**Beam inclination**:
+- TOP (`laser_name=1`): `beam_inclination.values` is a 64-element `number[]` — non-uniform spacing, denser near horizon.
+- FRONT/SIDE/REAR (`laser_name=2-5`): `beam_inclination.values` is `undefined` (not present in Parquet row). Must use `min`/`max` for uniform linear interpolation. Height is 200 rows for these sensors.
+
+**Extrinsic calibration**:
+- All 5 sensors have 16-element `number[]` (4×4 row-major). TOP's extrinsic includes ~1.8m Z translation (roof mount height).
+- Extrinsic transforms sensor-frame xyz → vehicle-frame xyz. Vehicle frame: X=forward, Y=left, Z=up.
+
+**Performance (CPU, single thread, M2 MacBook Air)**:
+- TOP (64×2650, 149K valid points): ~2.3ms per frame
+- All 5 sensors merged: ~5ms per frame, ~168K total points
+- Already fast enough for 10Hz (100ms budget). WebGPU will further improve in real browser with hardware GPU.
+- Dawn software renderer (Node.js `webgpu` pkg): ~35ms — slower due to no hardware acceleration. Browser Metal/Vulkan path expected ~1-2ms.
+
 ### D14. Waymo Parquet uses BROTLI compression → hyparquet-compressors required
 - **Discovery**: All Waymo v2.0 Parquet files use BROTLI compression codec. hyparquet core only includes Snappy; BROTLI requires `hyparquet-compressors` plugin.
 - **Why BROTLI**: Standard in Google's big data stack (BigQuery, Cloud Storage). ~20-30% better compression than GZIP on structured data. Waymo chose it for storage efficiency across petabyte-scale datasets.
@@ -341,7 +435,8 @@ Chronological record of technical decisions and the reasoning behind them.
 2. ✅ Waymo Dataset v2.0 download (sample segment)
 3. ✅ Parquet schema analysis
 4. ✅ Parquet loading infrastructure (hyparquet + merge + tests — 27 passing)
-5. ⬜ Range image → xyz conversion logic
-6. ⬜ Phase 1 MVP implementation
+5. ✅ Range image → xyz pure math (rangeImage.ts + 14 tests passing against real Waymo data)
+6. ✅ CPU Web Worker + WebGPU compute shader (lidarWorker.ts, rangeImageGpu.ts, GPU vs CPU 3 tests passing)
+7. ⬜ Phase 1 MVP implementation
 7. ⬜ Street Gaussians training
 8. ⬜ Deploy + LinkedIn post + Amy DM
