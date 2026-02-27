@@ -294,6 +294,18 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 - Perf-critical rendering: useFrame + imperative refs
 - WebGPU availability: Chrome 113+, Edge 113+, Safari 17.4+. Firefox fallback to Web Worker.
 
+### R3F vs Vanilla Three.js — 성능 동등성
+
+R3F(@react-three/fiber)는 Three.js 위의 얇은 React 바인딩이며, 렌더 루프 자체는 동일한 Three.js `WebGLRenderer`가 실행한다. 성능 차이가 없는 이유:
+
+1. **렌더 루프**: R3F의 `useFrame` 훅은 Three.js의 `requestAnimationFrame` 루프에 직접 콜백을 등록. 포인트 클라우드 업데이트 시 `bufferGeometry.attributes.position.needsUpdate = true`를 imperative하게 호출 — vanilla Three.js와 완전히 동일한 코드 경로.
+
+2. **Draw call 최소화**: 168K 포인트를 개별 `<mesh>`로 만들면 React reconciliation 오버헤드 발생. 우리는 `BufferGeometry` + `<points>`로 **한 번의 draw call**에 전체 포인트 클라우드 렌더. 바운딩 박스도 `InstancedMesh`로 94개를 **1 draw call**.
+
+3. **React 오버헤드 구간**: 컴포넌트 마운트/언마운트 시 Three.js 오브젝트 생성/삭제에만 발생. 이건 초기화 때 한 번이고 60fps 렌더 루프에는 영향 없음.
+
+4. **R3F 선택 이유**: Waymo JD가 React/TypeScript를 명시. R3F는 React 생태계 숙련도를 보여주면서도 Three.js 성능을 그대로 유지. 선언적 씬 그래프 구성 (카메라 패널, 컨트롤 등)에서 개발 생산성도 높음.
+
 ## 9. Interview Narrative
 
 "I analyzed Foxglove Studio and erksch's viewer, then built a Waymo v2.0-native visualization tool. Existing viewers require Python + TensorFlow servers or ROS conversion. Mine reads v2.0 Parquet natively in the browser — no server, no install. The 3DGS Bird's Eye View is unique — Waymo has no top-down camera, so I used Street Gaussians for Novel View Synthesis. I applied WebGL optimization experience from View360 (530+ stars, adopted by Amazon.com)."
@@ -428,6 +440,38 @@ Chronological record of technical decisions and the reasoning behind them.
 - **Why BROTLI**: Standard in Google's big data stack (BigQuery, Cloud Storage). ~20-30% better compression than GZIP on structured data. Waymo chose it for storage efficiency across petabyte-scale datasets.
 - **Why this is good for us**: BROTLI was originally designed by Google for web content delivery (`Content-Encoding: br`). Browser-native support exists for HTTP streams. The JS WASM decompressor in hyparquet-compressors is well-optimized. So Waymo's infrastructure choice accidentally aligns perfectly with browser-based access.
 - **Impact**: Must pass `compressors` option to all `parquetReadObjects()` calls. Added to `parquet.ts` as default. ~3KB additional dependency.
+
+### D18. Data Worker — Parquet I/O + 변환을 메인 스레드에서 완전 분리
+
+- **문제**: 프레임 전환에 ~4.5초 소요. 원인은 BROTLI 해제 + Parquet 컬럼 디코딩이 메인 스레드에서 동기적으로 실행되어 UI 프레임 드랍 유발.
+- **단순 프리페칭이 안 되는 이유**: 프리페칭은 동일 작업을 미리 실행할 뿐, BROTLI 해제 자체가 메인 스레드 CPU를 점유. 3프레임 프리페칭 시 블로킹이 3배로 증가.
+- **해결**: `dataWorker.ts` — 전체 파이프라인(fetch → BROTLI 해제 → Parquet 디코딩 → range image → xyz 변환)을 Web Worker에서 실행. 메인 스레드는 최종 `Float32Array`만 `transfer`로 수신 (zero-copy).
+- **아키텍처 — 모듈 책임 분리 유지**:
+  ```
+  dataWorker.ts (얇은 오케스트레이션, ~130줄)
+    ├── import { readFrameData } from parquet.ts      ← Parquet I/O 책임 (변경 없음)
+    ├── import { convertAllSensors } from rangeImage.ts ← 변환 책임 (변경 없음)
+    └── postMessage(Float32Array, [buffer])             ← zero-copy transfer
+  ```
+  Worker는 기존 모듈을 import해서 호출만 함. 각 모듈의 단일 책임 원칙 유지. Vite의 `new Worker(new URL(...))` 문법이 import를 자동 번들링.
+- **통신 패턴**: Promise-based request/response. `requestId`로 동시 다발 프리페치 요청 구분.
+  ```
+  Main Thread                          Data Worker
+  ──────────                          ───────────
+  init(lidarUrl, calibrations) ──→   openParquetFile + buildFrameIndex
+                               ←──   { type: 'ready' }
+  loadFrame(requestId, ts)     ──→   readFrameData → convertAllSensors
+                               ←──   { type: 'frameReady', positions: Float32Array } (transfer)
+  loadFrame(requestId+1, ts)   ──→   (프리페치 — 동시 처리)
+  loadFrame(requestId+2, ts)   ──→
+  ```
+- **프리페칭**: 현재 프레임 로드 완료 후 다음 3프레임을 Worker에 요청. Worker가 별도 스레드에서 처리하므로 메인 스레드 블로킹 제로. 순차 탐색 시 캐시 히트로 즉시 전환.
+- **YouTube-style buffer bar**: `cachedFrames: number[]` 상태로 캐시된 프레임 인덱스를 React에 노출. Timeline에서 연속 구간을 계산하여 반투명 바로 표시. 유저가 프리페치 진행 상황을 시각적으로 확인 가능.
+- **성능 영향**:
+  - 이전: 프레임 전환 시 메인 스레드 ~4.5초 블로킹 → UI 멈춤
+  - 이후: 메인 스레드 블로킹 0ms (postMessage 수신 + 캐시 저장만). Worker에서 ~4.5초 처리되지만 UI는 60fps 유지.
+  - 프리페치 적중 시: 프레임 전환 0ms (캐시에서 즉시 로드)
+- **면접 포인트**: "162MB LiDAR Parquet의 BROTLI 해제가 메인 스레드를 4.5초 블로킹하는 문제를 발견하고, Data Worker + transfer 패턴으로 메인 스레드 블로킹을 제로로 만들었습니다. 기존 parquet.ts와 rangeImage.ts 모듈은 변경 없이 Worker에서 import하여 재사용 — 단일 책임 원칙을 유지하면서 실행 컨텍스트만 이동했습니다."
 
 ### D17. CPU 변환 성능 regression guard — `lastConvertMs < 50ms`
 - **목적**: `convertAllSensors()` (range image → xyz) 알고리즘 변경 시 성능 퇴행을 로컬 테스트에서 자동 감지.

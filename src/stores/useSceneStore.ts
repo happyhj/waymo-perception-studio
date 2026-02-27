@@ -1,6 +1,9 @@
 /**
  * Scene store — Zustand-based central state for Waymo Perception Studio.
  *
+ * Heavy work (Parquet I/O + BROTLI decompress + LiDAR conversion) runs in
+ * a Data Worker — main thread stays free for 60fps rendering.
+ *
  * Usage in React:
  *   const pointCloud = useSceneStore(s => s.currentFrame?.pointCloud)
  *   const { loadDataset, nextFrame } = useSceneStore(s => s.actions)
@@ -16,18 +19,18 @@ import {
   openParquetFile,
   readAllRows,
   buildFrameIndex,
-  buildHeavyFileFrameIndex,
-  readFrameData,
   type WaymoParquetFile,
-  type FrameRowIndex,
 } from '../utils/parquet'
 import {
   parseLidarCalibration,
-  convertAllSensors,
   type LidarCalibration,
-  type RangeImage,
   type PointCloud,
 } from '../utils/rangeImage'
+import type {
+  DataWorkerRequest,
+  DataWorkerResponse,
+  DataWorkerFrameResult,
+} from '../workers/dataWorker'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +83,10 @@ export interface SceneState {
   lastFrameLoadMs: number
   lastConvertMs: number
 
+  // Prefetch progress (for YouTube-style buffer bar)
+  /** Sorted array of cached frame indices */
+  cachedFrames: number[]
+
   // Actions
   actions: SceneActions
 }
@@ -90,26 +97,87 @@ export interface SceneState {
 
 const internal = {
   parquetFiles: new Map<string, WaymoParquetFile>(),
-  heavyFileIndices: new Map<string, FrameRowIndex>(),
   timestamps: [] as bigint[],
   lidarBoxByFrame: new Map<unknown, ParquetRow[]>(),
   vehiclePoseByFrame: new Map<unknown, ParquetRow[]>(),
   frameCache: new Map<number, FrameData>(),
+  prefetchInFlight: new Set<number>(),
   playIntervalId: null as ReturnType<typeof setInterval> | null,
+  worker: null as Worker | null,
+  workerReady: false,
+  pendingRequests: new Map<number, {
+    resolve: (result: DataWorkerFrameResult) => void
+    reject: (err: Error) => void
+  }>(),
+  nextRequestId: 0,
   CACHE_SIZE: 10,
+  PREFETCH_AHEAD: 3,
 }
 
 function resetInternal() {
   internal.parquetFiles.clear()
-  internal.heavyFileIndices.clear()
   internal.timestamps = []
   internal.lidarBoxByFrame.clear()
   internal.vehiclePoseByFrame.clear()
   internal.frameCache.clear()
+  internal.prefetchInFlight.clear()
   if (internal.playIntervalId !== null) {
     clearInterval(internal.playIntervalId)
     internal.playIntervalId = null
   }
+  if (internal.worker) {
+    internal.worker.terminate()
+    internal.worker = null
+    internal.workerReady = false
+  }
+  internal.pendingRequests.clear()
+  internal.nextRequestId = 0
+}
+
+// ---------------------------------------------------------------------------
+// Worker communication
+// ---------------------------------------------------------------------------
+
+function postToWorker(msg: DataWorkerRequest) {
+  internal.worker?.postMessage(msg)
+}
+
+function requestWorkerFrame(
+  frameIndex: number,
+  timestamp: bigint,
+): Promise<DataWorkerFrameResult> {
+  return new Promise((resolve, reject) => {
+    const requestId = internal.nextRequestId++
+    internal.pendingRequests.set(requestId, { resolve, reject })
+    postToWorker({
+      type: 'loadFrame',
+      requestId,
+      frameIndex,
+      timestamp: timestamp.toString(),
+    })
+  })
+}
+
+function handleWorkerMessage(e: MessageEvent<DataWorkerResponse>) {
+  const msg = e.data
+
+  if (msg.type === 'frameReady' || msg.type === 'error') {
+    const pending = internal.pendingRequests.get(msg.requestId ?? -1)
+    if (pending) {
+      internal.pendingRequests.delete(msg.requestId!)
+      if (msg.type === 'error') {
+        pending.reject(new Error(msg.message))
+      } else {
+        pending.resolve(msg)
+      }
+    }
+  }
+}
+
+/** Update the cachedFrames state for the buffer bar UI */
+function syncCachedFrames(set: (partial: Partial<SceneState>) => void) {
+  const indices = [...internal.frameCache.keys()].sort((a, b) => a - b)
+  set({ cachedFrames: indices })
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +198,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   cameraCalibrations: [],
   lastFrameLoadMs: 0,
   lastConvertMs: 0,
+  cachedFrames: [],
 
   actions: {
     loadDataset: async (sources) => {
@@ -139,13 +208,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         availableComponents: [...sources.keys()],
         error: null,
         loadProgress: 0,
+        cachedFrames: [],
       })
 
       try {
         const totalSteps = sources.size + 2
         let completed = 0
 
-        // 1. Open all Parquet files (footer only)
+        // 1. Open all Parquet files (footer only — lightweight, main thread OK)
         for (const [component, source] of sources) {
           const pf = await openParquetFile(component, source)
           internal.parquetFiles.set(component, pf)
@@ -153,17 +223,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           set({ loadProgress: completed / totalSteps })
         }
 
-        // 2. Load startup data
+        // 2. Load startup data (small files: poses, calibrations, boxes)
         await loadStartupData(set)
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 3. Build heavy file indices
-        await buildHeavyIndices()
+        // 3. Init Data Worker for heavy lidar I/O
+        await initDataWorker(sources, get)
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 4. Load first frame
+        // 4. Load first frame (via worker — non-blocking)
         await get().actions.loadFrame(0)
 
         set({ status: 'ready', loadProgress: 1 })
@@ -178,44 +248,37 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     loadFrame: async (frameIndex) => {
       if (frameIndex < 0 || frameIndex >= internal.timestamps.length) return
 
-      // Cache hit
+      // Cache hit — instant
       const cached = internal.frameCache.get(frameIndex)
       if (cached) {
-        set({ currentFrameIndex: frameIndex, currentFrame: cached })
+        set({
+          currentFrameIndex: frameIndex,
+          currentFrame: cached,
+          lastFrameLoadMs: 0,
+          lastConvertMs: cached.pointCloud ? get().lastConvertMs : 0,
+        })
+        // Still prefetch ahead from new position
+        prefetchAhead(frameIndex, set)
         return
       }
 
       const timestamp = internal.timestamps[frameIndex]
       const t0 = performance.now()
 
-      // LiDAR → point cloud
+      // Request from worker (non-blocking — main thread stays free)
       let pointCloud: PointCloud | null = null
       let convertMs = 0
 
-      const lidarPf = internal.parquetFiles.get('lidar')
-      const lidarIndex = internal.heavyFileIndices.get('lidar')
-      if (lidarPf && lidarIndex) {
-        const lidarRows = await readFrameData(lidarPf, lidarIndex, timestamp, [
-          'key.laser_name',
-          '[LiDARComponent].range_image_return1.shape',
-          '[LiDARComponent].range_image_return1.values',
-        ])
-
-        const rangeImages = new Map<number, RangeImage>()
-        for (const row of lidarRows) {
-          const laserName = row['key.laser_name'] as number
-          rangeImages.set(laserName, {
-            shape: row['[LiDARComponent].range_image_return1.shape'] as [number, number, number],
-            values: row['[LiDARComponent].range_image_return1.values'] as number[],
-          })
+      if (internal.workerReady) {
+        const result = await requestWorkerFrame(frameIndex, timestamp)
+        pointCloud = {
+          positions: result.positions,
+          pointCount: result.pointCount,
         }
-
-        const ct0 = performance.now()
-        pointCloud = convertAllSensors(rangeImages, get().lidarCalibrations)
-        convertMs = performance.now() - ct0
+        convertMs = result.convertMs
       }
 
-      // Boxes + pose for this frame
+      // Boxes + pose (already in memory from startup)
       const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
       const poseRows = internal.vehiclePoseByFrame.get(timestamp)
       const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
@@ -229,10 +292,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }
 
       // LRU cache
-      if (internal.frameCache.size >= internal.CACHE_SIZE) {
-        const oldest = internal.frameCache.keys().next().value!
-        internal.frameCache.delete(oldest)
-      }
+      evictIfNeeded()
       internal.frameCache.set(frameIndex, frameData)
 
       set({
@@ -241,6 +301,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         lastFrameLoadMs: performance.now() - t0,
         lastConvertMs: convertMs,
       })
+
+      syncCachedFrames(set)
+
+      // Prefetch next N frames in background
+      prefetchAhead(frameIndex, set)
     },
 
     nextFrame: () => get().actions.loadFrame(get().currentFrameIndex + 1),
@@ -299,6 +364,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         cameraCalibrations: [],
         lastFrameLoadMs: 0,
         lastConvertMs: 0,
+        cachedFrames: [],
       })
     },
   },
@@ -307,6 +373,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function evictIfNeeded() {
+  if (internal.frameCache.size >= internal.CACHE_SIZE) {
+    const oldest = internal.frameCache.keys().next().value!
+    internal.frameCache.delete(oldest)
+  }
+}
 
 async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
   // Vehicle pose → master frame list
@@ -345,11 +418,113 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
   }
 }
 
-async function buildHeavyIndices() {
-  for (const component of ['lidar', 'camera_image', 'lidar_camera_projection', 'lidar_pose']) {
-    const pf = internal.parquetFiles.get(component)
-    if (pf) {
-      internal.heavyFileIndices.set(component, await buildHeavyFileFrameIndex(pf))
+// ---------------------------------------------------------------------------
+// Data Worker init
+// ---------------------------------------------------------------------------
+
+async function initDataWorker(
+  sources: Map<string, File | string>,
+  get: () => SceneState,
+) {
+  const lidarSource = sources.get('lidar')
+  if (!lidarSource || typeof lidarSource !== 'string') {
+    // Worker only supports URL-based sources for now
+    // File-based (drag & drop) will fall back to main-thread loading
+    return
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const worker = new Worker(
+      new URL('../workers/dataWorker.ts', import.meta.url),
+      { type: 'module' },
+    )
+
+    worker.onmessage = (e: MessageEvent<DataWorkerResponse>) => {
+      if (e.data.type === 'ready') {
+        internal.workerReady = true
+        // Switch to persistent handler
+        worker.onmessage = handleWorkerMessage
+        resolve()
+      } else if (e.data.type === 'error') {
+        reject(new Error(e.data.message))
+      }
     }
+
+    worker.onerror = (e) => reject(new Error(e.message))
+
+    internal.worker = worker
+
+    // Serialize calibrations as entries (Map can't be postMessage'd)
+    const calibEntries = [...get().lidarCalibrations.entries()]
+
+    postToWorker({
+      type: 'init',
+      lidarUrl: lidarSource,
+      calibrationEntries: calibEntries,
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Prefetching — load upcoming frames via worker in background
+// ---------------------------------------------------------------------------
+
+function prefetchAhead(
+  currentIndex: number,
+  set: (partial: Partial<SceneState>) => void,
+) {
+  if (!internal.workerReady) return
+
+  const total = internal.timestamps.length
+  for (let offset = 1; offset <= internal.PREFETCH_AHEAD; offset++) {
+    const idx = currentIndex + offset
+    if (idx >= total) break
+    if (internal.frameCache.has(idx)) continue
+    if (internal.prefetchInFlight.has(idx)) continue
+
+    internal.prefetchInFlight.add(idx)
+    prefetchFrame(idx, set).finally(() => {
+      internal.prefetchInFlight.delete(idx)
+    })
+  }
+}
+
+async function prefetchFrame(
+  frameIndex: number,
+  set: (partial: Partial<SceneState>) => void,
+) {
+  if (internal.frameCache.has(frameIndex)) return
+
+  const timestamp = internal.timestamps[frameIndex]
+  if (timestamp === undefined) return
+
+  try {
+    const result = await requestWorkerFrame(frameIndex, timestamp)
+
+    const pointCloud: PointCloud = {
+      positions: result.positions,
+      pointCount: result.pointCount,
+    }
+
+    // Boxes + pose (already in memory)
+    const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
+    const poseRows = internal.vehiclePoseByFrame.get(timestamp)
+    const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
+
+    const frameData: FrameData = {
+      timestamp,
+      pointCloud,
+      boxes,
+      cameraImages: new Map(),
+      vehiclePose,
+    }
+
+    evictIfNeeded()
+    internal.frameCache.set(frameIndex, frameData)
+
+    // Update UI buffer bar
+    syncCachedFrames(set)
+  } catch {
+    // Prefetch failure is non-critical — silently ignore
   }
 }
