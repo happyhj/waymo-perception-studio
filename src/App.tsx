@@ -2,6 +2,7 @@ import { useEffect, useCallback, useMemo } from 'react'
 import { useSceneStore } from './stores/useSceneStore'
 import LidarViewer from './components/LidarViewer/LidarViewer'
 import CameraPanel from './components/CameraPanel/CameraPanel'
+import { colors, fonts, radius, gradients } from './theme'
 
 
 // ---------------------------------------------------------------------------
@@ -9,7 +10,6 @@ import CameraPanel from './components/CameraPanel/CameraPanel'
 // ---------------------------------------------------------------------------
 
 function useSegmentDiscovery() {
-  const status = useSceneStore((s) => s.status)
   const availableSegments = useSceneStore((s) => s.availableSegments)
   const actions = useSceneStore((s) => s.actions)
 
@@ -62,9 +62,9 @@ function App() {
       height: '100vh',
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#1a1a2e',
-      color: '#e0e0e0',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
+      backgroundColor: colors.bgBase,
+      color: colors.textPrimary,
+      fontFamily: fonts.sans,
       overflow: 'hidden',
     }}>
       {/* Header */}
@@ -77,9 +77,9 @@ function App() {
 
       {/* Timeline */}
       <footer style={{
-        padding: '8px 16px',
-        backgroundColor: '#16213e',
-        borderTop: '1px solid #0f3460',
+        padding: '10px 20px',
+        background: colors.bgSurface,
+        borderTop: `1px solid ${colors.border}`,
         flexShrink: 0,
       }}>
         <Timeline />
@@ -129,15 +129,24 @@ function Header() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      padding: '8px 16px',
-      backgroundColor: '#16213e',
-      borderBottom: '1px solid #0f3460',
+      padding: '12px 24px',
+      background: colors.bgSurface,
+      borderBottom: `1px solid ${colors.border}`,
       flexShrink: 0,
-      gap: '12px',
+      gap: '16px',
     }}>
-      <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 600, whiteSpace: 'nowrap' }}>
-        Waymo Perception Studio
-      </h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <h1 style={{
+          margin: 0,
+          fontSize: '15px',
+          fontWeight: 600,
+          fontFamily: fonts.sans,
+          letterSpacing: '-0.01em',
+          color: colors.textPrimary,
+        }}>
+          Perception Studio <span style={{ fontWeight: 400, opacity: 0.5, fontSize: '12px' }}>for Waymo Open Dataset</span>
+        </h1>
+      </div>
 
       {/* Segment selector — only shown when multiple segments available */}
       {availableSegments.length > 1 && (
@@ -151,15 +160,26 @@ function Header() {
             flex: '0 1 auto',
             minWidth: 0,
             maxWidth: '360px',
-            padding: '4px 8px',
+            padding: '6px 12px',
             fontSize: '12px',
-            fontFamily: 'monospace',
-            backgroundColor: '#0f3460',
-            color: '#e0e0e0',
-            border: '1px solid #1a4a8a',
-            borderRadius: '4px',
+            fontFamily: fonts.mono,
+            backgroundColor: colors.bgOverlay,
+            color: colors.textPrimary,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.md,
             cursor: status === 'loading' ? 'not-allowed' : 'pointer',
             opacity: status === 'loading' ? 0.5 : 1,
+            outline: 'none',
+            boxShadow: `0 0 0 0px ${colors.accentGlow}`,
+            transition: 'box-shadow 0.2s, border-color 0.2s',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = colors.accent
+            e.currentTarget.style.boxShadow = `0 0 8px ${colors.accentGlow}`
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.borderColor = colors.border
+            e.currentTarget.style.boxShadow = 'none'
           }}
         >
           <option value="">-- select segment --</option>
@@ -169,7 +189,12 @@ function Header() {
         </select>
       )}
 
-      <div style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
+      <div style={{
+        fontSize: '12px',
+        fontFamily: fonts.mono,
+        color: colors.textSecondary,
+        whiteSpace: 'nowrap',
+      }}>
         {statusText}
       </div>
     </header>
@@ -191,11 +216,29 @@ function SensorView() {
           {status === 'ready' ? (
             <LidarViewer />
           ) : status === 'loading' ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              backgroundColor: colors.bgDeep,
+              color: colors.textSecondary,
+              fontFamily: fonts.sans,
+              fontSize: '14px',
+            }}>
               Loading LiDAR data…
             </div>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              backgroundColor: colors.bgDeep,
+              color: colors.textDim,
+              fontFamily: fonts.sans,
+              fontSize: '14px',
+            }}>
               3D LiDAR View
             </div>
           )}
@@ -253,15 +296,16 @@ function Timeline() {
   }, [cachedFrames, totalFrames])
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '13px' }}>
       {cachedFrames.length === 0 ? (
         <div style={{
-          width: '24px',
+          width: '28px',
+          height: '28px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           fontSize: '14px',
-          color: '#8892a0',
+          color: colors.textDim,
         }}>
           ⏳
         </div>
@@ -269,22 +313,35 @@ function Timeline() {
         <button
           onClick={() => actions.togglePlayback()}
           disabled={disabled}
-          style={{ background: 'none', border: 'none', color: disabled ? '#4a5568' : '#e0e0e0', cursor: disabled ? 'default' : 'pointer', fontSize: '16px', width: '24px' }}
+          style={{
+            width: '28px',
+            height: '28px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'none',
+            border: 'none',
+            color: disabled ? colors.textDim : colors.textPrimary,
+            cursor: disabled ? 'default' : 'pointer',
+            fontSize: '16px',
+            borderRadius: radius.sm,
+            transition: 'color 0.15s',
+          }}
         >
           {isPlaying ? '⏸' : '▶'}
         </button>
       )}
 
       {/* Custom slider with buffer bar */}
-      <div style={{ flex: 1, position: 'relative', height: '20px', display: 'flex', alignItems: 'center' }}>
+      <div style={{ flex: 1, position: 'relative', height: '24px', display: 'flex', alignItems: 'center' }}>
         {/* Track background */}
         <div style={{
           position: 'absolute',
           left: 0,
           right: 0,
-          height: '4px',
-          backgroundColor: '#1a2744',
-          borderRadius: '2px',
+          height: '6px',
+          backgroundColor: colors.bgOverlay,
+          borderRadius: radius.pill,
           pointerEvents: 'none',
         }} />
 
@@ -299,25 +356,43 @@ function Timeline() {
                 position: 'absolute',
                 left: `${left}%`,
                 width: `${width}%`,
-                height: '4px',
-                backgroundColor: 'rgba(233, 69, 96, 0.3)',
-                borderRadius: '2px',
+                height: '6px',
+                backgroundColor: colors.accentDim,
+                borderRadius: radius.pill,
                 pointerEvents: 'none',
               }}
             />
           )
         })}
 
-        {/* Played progress (red bar) */}
+        {/* Played progress (gradient bar) */}
         <div style={{
           position: 'absolute',
           left: 0,
           width: `${maxFrame > 0 ? (currentFrameIndex / maxFrame) * 100 : 0}%`,
-          height: '4px',
-          backgroundColor: '#e94560',
-          borderRadius: '2px',
+          height: '6px',
+          background: gradients.accent,
+          borderRadius: radius.pill,
           pointerEvents: 'none',
+          boxShadow: `0 0 8px ${colors.accentGlow}`,
         }} />
+
+        {/* Playhead dot */}
+        {maxFrame > 0 && (
+          <div style={{
+            position: 'absolute',
+            left: `${(currentFrameIndex / maxFrame) * 100}%`,
+            top: '50%',
+            width: '12px',
+            height: '12px',
+            borderRadius: '50%',
+            backgroundColor: colors.accent,
+            transform: 'translate(-50%, -50%)',
+            boxShadow: `0 0 6px ${colors.accentDim}`,
+            pointerEvents: 'none',
+            transition: 'left 0.05s linear',
+          }} />
+        )}
 
         {/* Invisible range input on top */}
         <input
@@ -332,7 +407,7 @@ function Timeline() {
             left: 0,
             right: 0,
             width: '100%',
-            height: '20px',
+            height: '24px',
             opacity: 0,
             cursor: disabled ? 'default' : 'pointer',
             margin: 0,
@@ -340,7 +415,13 @@ function Timeline() {
         />
       </div>
 
-      <span style={{ opacity: 0.6, fontSize: '12px', minWidth: '60px', textAlign: 'center' }}>
+      <span style={{
+        fontFamily: fonts.mono,
+        fontSize: '11px',
+        color: colors.textSecondary,
+        minWidth: '64px',
+        textAlign: 'right',
+      }}>
         {currentFrameIndex} / {maxFrame}
       </span>
     </div>

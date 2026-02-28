@@ -1,4 +1,4 @@
-# Waymo Perception Studio
+# Perception Studio for Waymo Open Dataset
 
 Browser-based 3D visualization tool for Waymo Open Dataset v2.0.
 

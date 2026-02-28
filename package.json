@@ -1,5 +1,5 @@
 {
-  "name": "waymo-perception-studio",
+  "name": "perception-studio",
   "private": true,
   "version": "0.0.0",
   "type": "module",

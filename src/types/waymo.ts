@@ -33,13 +33,13 @@ export const BoxType = {
 } as const
 export type BoxType = (typeof BoxType)[keyof typeof BoxType]
 
-/** Color palette per box type */
+/** Color palette per box type — nuScenes convention adapted for Waymo classes */
 export const BOX_TYPE_COLORS: Record<number, string> = {
-  [BoxType.TYPE_UNKNOWN]: '#888888',
-  [BoxType.TYPE_VEHICLE]: '#00d4ff',
-  [BoxType.TYPE_PEDESTRIAN]: '#ffff00',
-  [BoxType.TYPE_SIGN]: '#4d80ff',
-  [BoxType.TYPE_CYCLIST]: '#ff6600',
+  [BoxType.TYPE_UNKNOWN]: '#6B7280',
+  [BoxType.TYPE_VEHICLE]: '#FF9E00',    // orange (nuScenes car)
+  [BoxType.TYPE_PEDESTRIAN]: '#CCFF00', // lemon-lime (high visibility)
+  [BoxType.TYPE_SIGN]: '#FF44FF',       // bright magenta (Waymo-only class)
+  [BoxType.TYPE_CYCLIST]: '#DC143C',    // crimson (nuScenes bicycle)
 }
 
 /** A single LiDAR point */

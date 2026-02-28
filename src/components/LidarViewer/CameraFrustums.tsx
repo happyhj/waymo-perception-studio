@@ -6,10 +6,10 @@
  */
 
 import { useMemo } from 'react'
-import * as THREE from 'three'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { parseCameraCalibrations, buildFrustumLines, type CameraCalib } from '../../utils/cameraCalibration'
 import { CameraName } from '../../types/waymo'
+import { colors } from '../../theme'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,11 +18,11 @@ import { CameraName } from '../../types/waymo'
 const FRUSTUM_FAR = 6
 
 const CAMERA_COLORS: Record<number, string> = {
-  [CameraName.FRONT]: '#ffffff',
-  [CameraName.FRONT_LEFT]: '#4ade80',
-  [CameraName.FRONT_RIGHT]: '#60a5fa',
-  [CameraName.SIDE_LEFT]: '#fb923c',
-  [CameraName.SIDE_RIGHT]: '#c084fc',
+  [CameraName.FRONT]: colors.camFront,
+  [CameraName.FRONT_LEFT]: colors.camFrontLeft,
+  [CameraName.FRONT_RIGHT]: colors.camFrontRight,
+  [CameraName.SIDE_LEFT]: colors.camSideLeft,
+  [CameraName.SIDE_RIGHT]: colors.camSideRight,
 }
 
 // ---------------------------------------------------------------------------

@@ -18,13 +18,15 @@ import BoundingBoxes from './BoundingBoxes'
 import CameraFrustums from './CameraFrustums'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { parseCameraCalibrations, type CameraCalib } from '../../utils/cameraCalibration'
+import { BOX_TYPE_COLORS, BoxType } from '../../types/waymo'
+import { colors, fonts, radius } from '../../theme'
 
 const SENSOR_INFO: { id: number; label: string; color: string }[] = [
-  { id: 1, label: 'TOP', color: '#ff4d4d' },
-  { id: 2, label: 'FRONT', color: '#4dff4d' },
-  { id: 3, label: 'SIDE_L', color: '#4d80ff' },
-  { id: 4, label: 'SIDE_R', color: '#ffcc33' },
-  { id: 5, label: 'REAR', color: '#cc4dff' },
+  { id: 1, label: 'TOP', color: colors.sensorTop },
+  { id: 2, label: 'FRONT', color: colors.sensorFront },
+  { id: 3, label: 'SIDE_L', color: colors.sensorSideL },
+  { id: 4, label: 'SIDE_R', color: colors.sensorSideR },
+  { id: 5, label: 'REAR', color: colors.sensorRear },
 ]
 
 // ---------------------------------------------------------------------------
@@ -148,9 +150,12 @@ export default function LidarViewer() {
   const toggleSensor = useSceneStore((s) => s.actions.toggleSensor)
   const sensorClouds = useSceneStore((s) => s.currentFrame?.sensorClouds)
   const boxMode = useSceneStore((s) => s.boxMode)
-  const cycleBoxMode = useSceneStore((s) => s.actions.cycleBoxMode)
+  const setBoxMode = useSceneStore((s) => s.actions.setBoxMode)
   const trailLength = useSceneStore((s) => s.trailLength)
   const setTrailLength = useSceneStore((s) => s.actions.setTrailLength)
+  const pointOpacity = useSceneStore((s) => s.pointOpacity)
+  const setPointOpacity = useSceneStore((s) => s.actions.setPointOpacity)
+  const hasBoxData = useSceneStore((s) => s.hasBoxData)
   const cameraCalibrations = useSceneStore((s) => s.cameraCalibrations)
   const activeCam = useSceneStore((s) => s.activeCam)
   const setActiveCam = useSceneStore((s) => s.actions.setActiveCam)
@@ -186,7 +191,7 @@ export default function LidarViewer() {
         gl={{ antialias: false }}
         style={{ width: '100%', height: '100%' }}
         onCreated={({ gl }) => {
-          gl.setClearColor('#1a1a2e')
+          gl.setClearColor(colors.bgDeep)
         }}
       >
         <ambientLight intensity={0.3} />
@@ -201,14 +206,14 @@ export default function LidarViewer() {
 
         {/* Ground grid (XY plane, Z=0) */}
         <gridHelper
-          args={[200, 40, '#334155', '#1e293b']}
+          args={[200, 40, colors.gridMajor, colors.gridMinor]}
           rotation={[Math.PI / 2, 0, 0]}
         />
 
         {/* Vehicle origin marker */}
         <mesh position={[0, 0, 0]}>
           <sphereGeometry args={[0.3, 16, 16]} />
-          <meshBasicMaterial color="#e94560" />
+          <meshBasicMaterial color={colors.vehicleMarker} />
         </mesh>
 
         <OrbitControls
@@ -223,111 +228,273 @@ export default function LidarViewer() {
 
         <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
           <GizmoViewport
-            axisColors={['#e94560', '#22d3ee', '#a3e635']}
+            axisColors={[colors.gizmoX, colors.gizmoY, colors.gizmoZ]}
             labelColor="white"
           />
         </GizmoHelper>
       </Canvas>
 
-      {/* Sensor toggle overlay */}
+      {/* Layer control overlay */}
       <div style={{
         position: 'absolute',
-        top: 8,
-        left: 8,
+        top: 12,
+        left: 12,
         display: 'flex',
         flexDirection: 'column',
-        gap: '4px',
+        gap: '0px',
         pointerEvents: 'auto',
+        width: 172,
       }}>
-        {SENSOR_INFO.map(({ id, label, color }) => {
-          const active = visibleSensors.has(id)
-          const cloud = sensorClouds?.get(id)
-          const pts = cloud ? cloud.pointCount.toLocaleString() : '—'
-          return (
-            <button
-              key={id}
-              onClick={() => toggleSensor(id)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '3px 8px',
-                fontSize: '11px',
-                fontFamily: 'monospace',
-                border: 'none',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                backgroundColor: active ? 'rgba(22, 33, 62, 0.85)' : 'rgba(22, 33, 62, 0.4)',
-                color: active ? '#e0e0e0' : '#666',
-                opacity: active ? 1 : 0.5,
-              }}
-            >
-              <span style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                backgroundColor: active ? color : '#444',
-                display: 'inline-block',
-                flexShrink: 0,
-              }} />
-              {label}
-              <span style={{ color: '#8892a0', marginLeft: 'auto', paddingLeft: 8 }}>{pts}</span>
-            </button>
-          )
-        })}
+        {/* ── SENSORS group ── */}
+        <div style={{
+          fontSize: '9px',
+          fontFamily: fonts.sans,
+          fontWeight: 600,
+          color: colors.textDim,
+          letterSpacing: '1.2px',
+          textTransform: 'uppercase',
+          padding: '4px 10px 3px',
+        }}>
+          Sensors
+        </div>
 
-        {/* Perception controls */}
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <button
-            onClick={cycleBoxMode}
-            style={{
-              padding: '3px 8px',
-              fontSize: '11px',
-              fontFamily: 'monospace',
-              border: 'none',
-              borderRadius: '3px',
-              cursor: 'pointer',
-              backgroundColor: boxMode !== 'off' ? 'rgba(233, 69, 96, 0.7)' : 'rgba(22, 33, 62, 0.6)',
-              color: boxMode !== 'off' ? '#fff' : '#8892a0',
-            }}
-          >
-            {boxMode === 'off' ? 'DETECT OFF' : boxMode === 'box' ? 'DETECT BOX' : 'DETECT 3D'}
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          {SENSOR_INFO.map(({ id, label, color }) => {
+            const active = visibleSensors.has(id)
+            const cloud = sensorClouds?.get(id)
+            const pts = cloud ? cloud.pointCount.toLocaleString() : '—'
+            return (
+              <button
+                key={id}
+                onClick={() => toggleSensor(id)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '4px 10px',
+                  fontSize: '11px',
+                  fontFamily: fonts.sans,
+                  fontWeight: 500,
+                  border: 'none',
+                  borderRadius: radius.sm,
+                  cursor: 'pointer',
+                  backgroundColor: active ? 'rgba(26, 31, 53, 0.9)' : 'rgba(26, 31, 53, 0.5)',
+                  color: active ? colors.textPrimary : colors.textDim,
+                  opacity: active ? 1 : 0.6,
+                  backdropFilter: 'blur(8px)',
+                  transition: 'opacity 0.15s, background-color 0.15s',
+                }}
+              >
+                <span style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  backgroundColor: active ? color : colors.textDim,
+                  display: 'inline-block',
+                  flexShrink: 0,
+                  boxShadow: active ? `0 0 6px ${color}` : 'none',
+                }} />
+                {label}
+                <span style={{
+                  color: colors.textSecondary,
+                  marginLeft: 'auto',
+                  paddingLeft: 8,
+                  fontFamily: fonts.mono,
+                  fontSize: '10px',
+                }}>
+                  {pts}
+                </span>
+              </button>
+            )
+          })}
+        </div>
 
-          {boxMode !== 'off' && (
+        {/* Opacity slider */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '4px 10px',
+          marginTop: 4,
+          backgroundColor: 'rgba(26, 31, 53, 0.9)',
+          borderRadius: radius.sm,
+          backdropFilter: 'blur(8px)',
+        }}>
+          <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
+            Opacity
+          </span>
+          <input
+            type="range"
+            min={10}
+            max={100}
+            value={Math.round(pointOpacity * 100)}
+            onChange={(e) => setPointOpacity(Number(e.target.value) / 100)}
+            style={{ width: 52, height: 2, accentColor: colors.accent }}
+          />
+          <span style={{
+            fontSize: '10px',
+            fontFamily: fonts.mono,
+            color: colors.textPrimary,
+            minWidth: 24,
+            textAlign: 'right',
+          }}>
+            {Math.round(pointOpacity * 100)}%
+          </span>
+        </div>
+
+        {/* ── Divider + PERCEPTION group (hidden when no box data, e.g. test set) ── */}
+        {hasBoxData && <>
+        <div style={{
+          height: '1px',
+          background: `linear-gradient(90deg, ${colors.border} 0%, transparent 100%)`,
+          margin: '8px 10px',
+        }} />
+
+        {/* ── PERCEPTION group ── */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '0px 10px 4px',
+        }}>
+          <div style={{
+            width: '3px',
+            height: '10px',
+            borderRadius: '2px',
+            backgroundColor: boxMode !== 'off' ? colors.accentBlue : colors.textDim,
+            transition: 'background-color 0.2s',
+          }} />
+          <span style={{
+            fontSize: '9px',
+            fontFamily: fonts.sans,
+            fontWeight: 600,
+            color: colors.textDim,
+            letterSpacing: '1.2px',
+            textTransform: 'uppercase',
+          }}>
+            Perception
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {/* Segmented control: Off | Boxes | Models */}
+          <div style={{
+            display: 'flex',
+            borderRadius: radius.sm,
+            overflow: 'hidden',
+            backgroundColor: 'rgba(26, 31, 53, 0.7)',
+            backdropFilter: 'blur(8px)',
+          }}>
+            {([['off', 'Off'], ['box', 'Boxes'], ['model', 'Models']] as const).map(([mode, label]) => {
+              const active = boxMode === mode
+              const isOn = mode !== 'off'
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setBoxMode(mode)}
+                  style={{
+                    flex: 1,
+                    padding: '4px 0',
+                    fontSize: '10px',
+                    fontFamily: fonts.sans,
+                    fontWeight: active ? 600 : 400,
+                    border: 'none',
+                    cursor: 'pointer',
+                    backgroundColor: active
+                      ? (isOn ? 'rgba(0, 200, 219, 0.2)' : 'rgba(26, 31, 53, 0.95)')
+                      : 'transparent',
+                    color: active
+                      ? (isOn ? colors.accentBlue : colors.textPrimary)
+                      : colors.textDim,
+                    transition: 'all 0.15s',
+                    letterSpacing: '0.3px',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
+          {boxMode !== 'off' && (<>
+            {/* Class legend */}
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '2px 8px',
+              padding: '4px 10px',
+              backgroundColor: 'rgba(26, 31, 53, 0.9)',
+              borderRadius: radius.sm,
+              backdropFilter: 'blur(8px)',
+            }}>
+              {([
+                [BoxType.TYPE_VEHICLE, 'Vehicle'],
+                [BoxType.TYPE_PEDESTRIAN, 'Pedestrian'],
+                [BoxType.TYPE_CYCLIST, 'Cyclist'],
+                [BoxType.TYPE_SIGN, 'Sign'],
+              ] as const).map(([type, label]) => (
+                <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '1px',
+                    backgroundColor: BOX_TYPE_COLORS[type],
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }} />
+                  <span style={{
+                    fontSize: '9px',
+                    fontFamily: fonts.sans,
+                    color: colors.textSecondary,
+                  }}>
+                    {label}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Trail slider */}
             <div style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
-              padding: '3px 8px',
-              backgroundColor: 'rgba(22, 33, 62, 0.85)',
-              borderRadius: '3px',
+              gap: '8px',
+              padding: '4px 10px',
+              backgroundColor: 'rgba(26, 31, 53, 0.9)',
+              borderRadius: radius.sm,
+              backdropFilter: 'blur(8px)',
             }}>
-              <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#8892a0', whiteSpace: 'nowrap' }}>
-                TRAIL
+              <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
+                Trail
               </span>
               <input
                 type="range"
                 min={0}
-                max={100}
+                max={50}
                 value={trailLength}
                 onChange={(e) => setTrailLength(Number(e.target.value))}
-                style={{ width: 60, height: 2, accentColor: '#e94560' }}
+                style={{ width: 52, height: 2, accentColor: colors.accentBlue }}
               />
-              <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#e0e0e0', minWidth: 16, textAlign: 'right' }}>
+              <span style={{
+                fontSize: '10px',
+                fontFamily: fonts.mono,
+                color: colors.textPrimary,
+                minWidth: 16,
+                textAlign: 'right',
+              }}>
                 {trailLength}
               </span>
             </div>
-          )}
+          </>)}
         </div>
+        </>}
       </div>
 
       {/* POV mode indicator + exit button */}
       {activeCam !== null && (
         <div style={{
           position: 'absolute',
-          top: 8,
-          right: 8,
+          top: 12,
+          right: 12,
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
@@ -335,25 +502,30 @@ export default function LidarViewer() {
         }}>
           <span style={{
             fontSize: '12px',
-            fontFamily: 'monospace',
-            color: '#e0e0e0',
-            backgroundColor: 'rgba(22, 33, 62, 0.85)',
-            padding: '4px 10px',
-            borderRadius: '3px',
+            fontFamily: fonts.sans,
+            fontWeight: 500,
+            color: colors.textPrimary,
+            backgroundColor: 'rgba(26, 31, 53, 0.9)',
+            padding: '5px 12px',
+            borderRadius: radius.sm,
+            backdropFilter: 'blur(8px)',
           }}>
             CAM {['', 'FRONT', 'FL', 'FR', 'SL', 'SR'][activeCam] ?? activeCam}
           </span>
           <button
             onClick={() => setActiveCam(null)}
             style={{
-              padding: '4px 10px',
+              padding: '5px 12px',
               fontSize: '11px',
-              fontFamily: 'monospace',
+              fontFamily: fonts.sans,
+              fontWeight: 600,
               border: 'none',
-              borderRadius: '3px',
+              borderRadius: radius.sm,
               cursor: 'pointer',
-              backgroundColor: 'rgba(233, 69, 96, 0.8)',
+              backgroundColor: 'rgba(255, 107, 138, 0.8)',
               color: '#fff',
+              backdropFilter: 'blur(8px)',
+              transition: 'background-color 0.15s',
             }}
           >
             ESC

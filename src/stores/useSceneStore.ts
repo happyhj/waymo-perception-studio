@@ -1,5 +1,5 @@
 /**
- * Scene store — Zustand-based central state for Waymo Perception Studio.
+ * Scene store — Zustand-based central state for Perception Studio.
  *
  * Heavy work (Parquet I/O + BROTLI decompress + LiDAR conversion) runs in
  * a pool of N Data Workers — main thread stays free for 60fps rendering.
@@ -69,7 +69,9 @@ interface SceneActions {
   setPlaybackSpeed: (speed: number) => void
   toggleSensor: (laserName: number) => void
   cycleBoxMode: () => void
+  setBoxMode: (mode: BoxMode) => void
   setTrailLength: (len: number) => void
+  setPointOpacity: (opacity: number) => void
   setActiveCam: (cam: number | null) => void
   toggleActiveCam: (cam: number) => void
   setHoveredCam: (cam: number | null) => void
@@ -115,6 +117,10 @@ export interface SceneState {
   boxMode: BoxMode
   /** Number of past frames to show in trajectory trail (0 = off) */
   trailLength: number
+  /** Point cloud opacity (0..1) */
+  pointOpacity: number
+  /** Whether lidar_box data is available (false for test set) */
+  hasBoxData: boolean
   /** Active camera for POV mode (null = orbital view) */
   activeCam: number | null
   /** Camera being hovered in CameraPanel (for frustum highlight) */
@@ -299,7 +305,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   cameraTotalCount: 0,
   visibleSensors: new Set([1, 2, 3, 4, 5]),
   boxMode: 'box' as BoxMode,
-  trailLength: 20,
+  trailLength: 10,
+  pointOpacity: 0.85,
+  hasBoxData: false,
   activeCam: null,
   hoveredCam: null,
   availableSegments: [],
@@ -488,8 +496,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       set({ boxMode: order[(cur + 1) % order.length] })
     },
 
+    setBoxMode: (mode: BoxMode) => {
+      set({ boxMode: mode })
+    },
+
     setTrailLength: (len: number) => {
-      set({ trailLength: Math.max(0, Math.min(199, len)) })
+      set({ trailLength: Math.max(0, Math.min(50, len)) })
+    },
+
+    setPointOpacity: (opacity: number) => {
+      set({ pointOpacity: Math.max(0.1, Math.min(1, opacity)) })
     },
     setActiveCam: (cam: number | null) => {
       set({ activeCam: cam })
@@ -506,9 +522,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     },
 
     selectSegment: async (segmentId: string) => {
-      const { actions } = get()
+      const { actions, visibleSensors, boxMode, trailLength, pointOpacity } = get()
+      // Preserve UI panel settings across segment switches
+      const savedSettings = { visibleSensors: new Set(visibleSensors), boxMode, trailLength, pointOpacity }
       actions.reset()
-      set({ currentSegment: segmentId })
+      set({ currentSegment: segmentId, ...savedSettings })
 
       const components = [
         'vehicle_pose', 'lidar_calibration', 'camera_calibration',
@@ -543,7 +561,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         cameraTotalCount: 0,
         visibleSensors: new Set([1, 2, 3, 4, 5]),
         boxMode: 'box' as BoxMode,
-        trailLength: 20,
+        trailLength: 10,
+        pointOpacity: 0.85,
+        hasBoxData: false,
         activeCam: null,
         hoveredCam: null,
       })
@@ -687,11 +707,12 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
     set({ cameraCalibrations: await readAllRows(cameraCalibPf) })
   }
 
-  // LiDAR boxes
+  // LiDAR boxes (absent in test set — gracefully skip)
   const lidarBoxPf = internal.parquetFiles.get('lidar_box')
   if (lidarBoxPf) {
     const rows = await readAllRows(lidarBoxPf)
     internal.lidarBoxByFrame = groupIndexBy(rows, 'key.frame_timestamp_micros')
+    set({ hasBoxData: rows.length > 0 })
 
     // Build object trajectory index (objectId → sorted positions by frame)
     for (const row of rows) {

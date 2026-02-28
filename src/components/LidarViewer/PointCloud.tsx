@@ -14,40 +14,42 @@ import { useSceneStore } from '../../stores/useSceneStore'
 import type { PointCloud as PointCloudType } from '../../utils/rangeImage'
 
 // ---------------------------------------------------------------------------
-// Turbo colormap (simplified 8-stop LUT, linearly interpolated)
+// Intensity colormap — cool-tinted white ramp
+//
+// Dark blue-gray → neutral mid → bright white.
+// Avoids warm hues so perception box colors (orange, blue, crimson, magenta)
+// pop clearly on top. Perceptually uniform luminance progression.
 // ---------------------------------------------------------------------------
 
-const TURBO_STOPS: [number, number, number][] = [
-  [0.19, 0.07, 0.23],  // 0.0 — dark purple
-  [0.11, 0.32, 0.76],  // ~0.14
-  [0.06, 0.57, 0.87],  // ~0.29
-  [0.17, 0.80, 0.64],  // ~0.43
-  [0.49, 0.93, 0.36],  // ~0.57
-  [0.80, 0.89, 0.17],  // ~0.71
-  [0.97, 0.64, 0.10],  // ~0.86
-  [0.90, 0.18, 0.15],  // 1.0 — red
+const INTENSITY_STOPS: [number, number, number][] = [
+  [0.08, 0.09, 0.16],  // 0.0 — near-black (dark navy)
+  [0.16, 0.20, 0.32],  // ~0.2 — dark slate
+  [0.30, 0.38, 0.52],  // ~0.4 — cool gray
+  [0.52, 0.60, 0.72],  // ~0.6 — silver blue
+  [0.78, 0.84, 0.90],  // ~0.8 — light gray
+  [0.95, 0.97, 1.00],  // 1.0 — near-white
 ]
 
-function turboColor(t: number): [number, number, number] {
+function intensityColor(t: number): [number, number, number] {
   const tc = Math.max(0, Math.min(1, t))
-  const idx = tc * (TURBO_STOPS.length - 1)
+  const idx = tc * (INTENSITY_STOPS.length - 1)
   const lo = Math.floor(idx)
-  const hi = Math.min(lo + 1, TURBO_STOPS.length - 1)
+  const hi = Math.min(lo + 1, INTENSITY_STOPS.length - 1)
   const f = idx - lo
   return [
-    TURBO_STOPS[lo][0] + f * (TURBO_STOPS[hi][0] - TURBO_STOPS[lo][0]),
-    TURBO_STOPS[lo][1] + f * (TURBO_STOPS[hi][1] - TURBO_STOPS[lo][1]),
-    TURBO_STOPS[lo][2] + f * (TURBO_STOPS[hi][2] - TURBO_STOPS[lo][2]),
+    INTENSITY_STOPS[lo][0] + f * (INTENSITY_STOPS[hi][0] - INTENSITY_STOPS[lo][0]),
+    INTENSITY_STOPS[lo][1] + f * (INTENSITY_STOPS[hi][1] - INTENSITY_STOPS[lo][1]),
+    INTENSITY_STOPS[lo][2] + f * (INTENSITY_STOPS[hi][2] - INTENSITY_STOPS[lo][2]),
   ]
 }
 
-// Sensor color map for per-sensor coloring mode
+// Sensor color map for per-sensor coloring mode (cool-tone Waymo palette)
 const SENSOR_COLORS: Record<number, [number, number, number]> = {
-  1: [1.0, 0.3, 0.3],   // TOP — red
-  2: [0.3, 1.0, 0.3],   // FRONT — green
-  3: [0.3, 0.5, 1.0],   // SIDE_LEFT — blue
-  4: [1.0, 0.8, 0.2],   // SIDE_RIGHT — yellow
-  5: [0.8, 0.3, 1.0],   // REAR — purple
+  1: [0.0, 0.91, 0.62],  // TOP — teal (#00E89D)
+  2: [0.0, 0.79, 0.86],  // FRONT — cyan (#00C9DB)
+  3: [0.30, 0.66, 1.0],  // SIDE_LEFT — sky blue (#4DA8FF)
+  4: [0.48, 0.44, 1.0],  // SIDE_RIGHT — indigo (#7B6FFF)
+  5: [0.71, 0.56, 1.0],  // REAR — lavender (#B490FF)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,7 @@ const ALL_SENSORS = new Set([1, 2, 3, 4, 5])
 export default function PointCloud() {
   const currentFrame = useSceneStore((s) => s.currentFrame)
   const visibleSensors = useSceneStore((s) => s.visibleSensors)
+  const pointOpacity = useSceneStore((s) => s.pointOpacity)
   const geometryRef = useRef<THREE.BufferGeometry>(null)
 
   // Check if all sensors visible (fast path — use pre-merged buffer)
@@ -104,7 +107,7 @@ export default function PointCloud() {
         posArr[dst] = positions[src]
         posArr[dst + 1] = positions[src + 1]
         posArr[dst + 2] = positions[src + 2]
-        const [r, g, b] = turboColor(positions[src + 3])
+        const [r, g, b] = intensityColor(positions[src + 3])
         colArr[dst] = r
         colArr[dst + 1] = g
         colArr[dst + 2] = b
@@ -162,7 +165,7 @@ export default function PointCloud() {
         sizeAttenuation
         vertexColors
         transparent
-        opacity={0.85}
+        opacity={pointOpacity}
         depthWrite={false}
       />
     </points>

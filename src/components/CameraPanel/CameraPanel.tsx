@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { CameraName } from '../../types/waymo'
+import { colors, fonts, radius, shadows } from '../../theme'
 
 // Camera display order: surround view left-to-right
 const CAMERA_ORDER: { id: number; label: string }[] = [
@@ -28,11 +29,11 @@ const CAMERA_ORDER: { id: number; label: string }[] = [
 const STRIP_HEIGHT = 160
 
 const CAMERA_COLORS: Record<number, string> = {
-  [CameraName.FRONT]: '#ffffff',
-  [CameraName.FRONT_LEFT]: '#4ade80',
-  [CameraName.FRONT_RIGHT]: '#60a5fa',
-  [CameraName.SIDE_LEFT]: '#fb923c',
-  [CameraName.SIDE_RIGHT]: '#c084fc',
+  [CameraName.FRONT]: colors.camFront,
+  [CameraName.FRONT_LEFT]: colors.camFrontLeft,
+  [CameraName.FRONT_RIGHT]: colors.camFrontRight,
+  [CameraName.SIDE_LEFT]: colors.camSideLeft,
+  [CameraName.SIDE_RIGHT]: colors.camSideRight,
 }
 
 export default function CameraPanel() {
@@ -46,10 +47,10 @@ export default function CameraPanel() {
       height: STRIP_HEIGHT,
       flexShrink: 0,
       display: 'flex',
-      gap: '2px',
-      padding: '4px',
-      backgroundColor: '#0d1b2a',
-      borderTop: '1px solid #1b2838',
+      gap: '6px',
+      padding: '6px 8px',
+      backgroundColor: colors.bgDeep,
+      borderTop: `1px solid ${colors.borderSubtle}`,
       overflow: 'hidden',
     }}>
       {CAMERA_ORDER.map(({ id, label }) => (
@@ -137,13 +138,14 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
       style={{
         flex,
         position: 'relative',
-        backgroundColor: '#111827',
-        borderRadius: '4px',
+        backgroundColor: colors.bgBase,
+        borderRadius: radius.md,
         overflow: 'hidden',
         minWidth: 0,
         cursor: 'pointer',
-        border: active ? `2px solid ${accentColor}` : '2px solid transparent',
-        transition: 'border-color 0.15s',
+        border: active ? `2px solid ${accentColor}` : `2px solid ${colors.borderSubtle}`,
+        boxShadow: active ? `0 0 12px ${accentColor}33` : shadows.card,
+        transition: 'border-color 0.2s, box-shadow 0.2s',
       }}
       onClick={handleClick}
       onMouseEnter={() => { setHovered(true); onHover(cameraName) }}
@@ -167,8 +169,9 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: '#4a5568',
+          color: colors.textDim,
           fontSize: '11px',
+          fontFamily: fonts.sans,
         }}>
           No image
         </div>
@@ -182,18 +185,19 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: active ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.35)',
+          backgroundColor: active ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.4)',
           transition: 'background-color 0.15s',
         }}>
           <span style={{
             fontSize: '11px',
-            fontFamily: 'monospace',
-            fontWeight: 700,
+            fontFamily: fonts.sans,
+            fontWeight: 600,
             color: active ? accentColor : '#fff',
             backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            padding: '3px 10px',
-            borderRadius: '3px',
+            padding: '4px 12px',
+            borderRadius: radius.sm,
             letterSpacing: '0.5px',
+            backdropFilter: 'blur(4px)',
           }}>
             {active ? 'EXIT POV' : 'POV'}
           </span>
@@ -203,15 +207,18 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
       {/* Label overlay */}
       <div style={{
         position: 'absolute',
-        bottom: 4,
-        left: 6,
-        fontSize: '10px',
-        fontFamily: 'monospace',
-        color: 'rgba(255, 255, 255, 0.7)',
+        bottom: 6,
+        left: 8,
+        fontSize: '9px',
+        fontFamily: fonts.sans,
+        fontWeight: 500,
+        color: 'rgba(255, 255, 255, 0.75)',
         backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        padding: '1px 4px',
-        borderRadius: '2px',
+        padding: '2px 6px',
+        borderRadius: radius.sm,
         pointerEvents: 'none',
+        letterSpacing: '0.5px',
+        textTransform: 'uppercase',
       }}>
         {label}
       </div>
@@ -220,13 +227,13 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
       {active && (
         <div style={{
           position: 'absolute',
-          top: 6,
-          right: 6,
+          top: 8,
+          right: 8,
           width: 8,
           height: 8,
           borderRadius: '50%',
           backgroundColor: accentColor,
-          boxShadow: `0 0 6px ${accentColor}`,
+          boxShadow: `0 0 8px ${accentColor}`,
         }} />
       )}
     </div>

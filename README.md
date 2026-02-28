@@ -1,4 +1,4 @@
-# Waymo Perception Studio
+# Perception Studio for Waymo Open Dataset
 
 A browser-based 3D visualization tool for [Waymo Open Dataset v2.0](https://waymo.com/open/data/perception/). No server required — explore LiDAR point clouds, camera feeds, 3D bounding boxes, and photorealistic 3DGS Bird's Eye View directly in the browser.
 
@@ -8,52 +8,90 @@ Visit **[heejaekim.github.io/waymo-perception-studio](https://heejaekim.github.i
 
 To explore the Sensor View, download a sample segment (see below) and drag & drop the `waymo_data/` folder into the app.
 
-## Download Sample Segments
+## Download Data
 
-You need access to the [Waymo Open Dataset](https://waymo.com/open/) (free, requires Google account and license agreement).
+The viewer works with [Waymo Open Dataset v2.0](https://waymo.com/open/) Parquet files. Access is free — you just need a Google account and to accept the license agreement.
+
+### Prerequisites
 
 ```bash
-# Authenticate with Google Cloud
-gcloud auth login
+# Install Google Cloud CLI (if you don't have it)
+# https://cloud.google.com/sdk/docs/install
 
+# Sign in to your Google account
+gcloud auth login
+```
+
+### Option A: Download a single segment (~500MB)
+
+A single segment is a 20-second driving clip. This is the quickest way to try the viewer.
+
+```bash
+# Training (~798 segments) or validation (~202 segments)
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
 
-# The 6 components used by the viewer
+# Pick any segment — this is one example
+SEGMENT="10203656353524179475_7625_000_7645_000"
+
+# These 6 components are what the viewer uses
 COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
 
-# Create local data directories
-for COMP in $COMPONENTS; do mkdir -p waymo_data/$COMP; done
+# Download
+for COMP in $COMPONENTS; do
+  mkdir -p waymo_data/$COMP
+  gsutil cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/"
+done
+```
 
-# Discover first 10 segments from the bucket and download
-SEGMENTS=$(gsutil ls $BUCKET/vehicle_pose/ | head -10 | xargs -I{} basename {} .parquet)
+### Option B: Download multiple segments
+
+```bash
+# Change to ".../validation" for the validation split
+BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
+
+# How many segments to download
+# Training: ~798 segments, Validation: ~202 segments (~1,000 total)
+# Change N to download more, or remove "| head -$N" below to download all
+N=5
+
+# List available segments and download the first N
+SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/" | head -$N | xargs -I{} basename {} .parquet)
 
 for SEGMENT in $SEGMENTS; do
   echo "Downloading segment: $SEGMENT"
   for COMP in $COMPONENTS; do
+    mkdir -p waymo_data/$COMP
     gsutil -m cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/" 2>/dev/null
   done
 done
 ```
 
-This preserves Waymo's original folder structure:
+### Expected folder structure
+
+After downloading, your folder should look like this. Drag & drop the entire `waymo_data/` folder into the viewer.
 
 ```
 waymo_data/
-├── lidar/
-│   ├── {segment_a}.parquet
-│   └── {segment_b}.parquet
-├── camera_image/
-│   ├── {segment_a}.parquet
-│   └── {segment_b}.parquet
 ├── vehicle_pose/
-│   ├── {segment_a}.parquet
-│   └── {segment_b}.parquet
-└── ...
+│   └── {segment_id}.parquet
+├── lidar/
+│   └── {segment_id}.parquet
+├── lidar_box/
+│   └── {segment_id}.parquet
+├── lidar_calibration/
+│   └── {segment_id}.parquet
+├── camera_image/
+│   └── {segment_id}.parquet
+└── camera_calibration/
+    └── {segment_id}.parquet
 ```
 
-> **Disk space:** Each segment is ~500MB (6 essential components). 10 segments ≈ 5GB.
+> **Disk space:** Each segment ≈ 500MB across the 6 components. 5 segments ≈ 2.5GB, full training set ≈ 400GB.
 >
-> **Multiple segments:** When multiple segments are present, a dropdown selector appears in the header to switch between them.
+> **Multiple segments:** When multiple segments are present, a dropdown appears to switch between them.
+>
+> **Test set:** The test split has no `lidar_box` labels — the viewer still works but the Perception panel (bounding boxes, trails) will be hidden.
 
 ## For Developers
 

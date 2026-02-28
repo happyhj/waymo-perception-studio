@@ -1,4 +1,4 @@
-# Technical Plan — Waymo Perception Studio
+# Technical Plan — Perception Studio for Waymo Open Dataset
 
 Portfolio project targeting Waymo Fullstack Engineer (Applications & Tools) role.
 Timeline: 4–5 days.
