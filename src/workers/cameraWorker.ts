@@ -29,7 +29,7 @@ let cameraPf: WaymoParquetFile | null = null
 
 export interface CameraWorkerInit {
   type: 'init'
-  cameraUrl: string
+  cameraUrl: string | File
 }
 
 export interface CameraWorkerLoadRowGroup {

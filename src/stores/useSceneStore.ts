@@ -82,12 +82,16 @@ interface SceneActions {
   reset: () => void
 }
 
+export type LoadStep = 'opening' | 'parsing' | 'workers' | 'first-frame'
+
 export interface SceneState {
   // Loading
   status: LoadStatus
   error: string | null
   availableComponents: string[]
   loadProgress: number
+  /** Current loading step for UI feedback */
+  loadStep: LoadStep
 
   // Frame navigation
   totalFrames: number
@@ -142,7 +146,7 @@ export interface SceneState {
 // ---------------------------------------------------------------------------
 
 /** Number of parallel workers for row group decompression */
-const WORKER_CONCURRENCY = 4
+const WORKER_CONCURRENCY = 3
 
 const internal = {
   parquetFiles: new Map<string, WaymoParquetFile>(),
@@ -304,6 +308,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   error: null,
   availableComponents: [],
   loadProgress: 0,
+  loadStep: 'opening' as LoadStep,
   totalFrames: 0,
   currentFrameIndex: 0,
   isPlaying: false,
@@ -335,6 +340,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         availableComponents: [...sources.keys()],
         error: null,
         loadProgress: 0,
+        loadStep: 'opening' as LoadStep,
         cachedFrames: [],
       })
 
@@ -356,32 +362,44 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
 
         // 2. Load startup data (small files: poses, calibrations, boxes)
+        set({ loadStep: 'parsing' as LoadStep })
         await loadStartupData(set, get)
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 3. Init Data Workers for heavy I/O (lidar + camera)
-        await initDataWorker(sources, get)
-        await initCameraWorker(sources)
+        // 3. Init LiDAR + Camera workers in parallel
+        set({ loadStep: 'workers' as LoadStep })
+        await Promise.all([
+          initDataWorker(sources, get),
+          initCameraWorker(sources),
+        ])
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 4. Load first frame
+        // 4. Load first row group: LiDAR + Camera in parallel
+        set({ loadStep: 'first-frame' as LoadStep })
         const rgT0 = performance.now()
+        const firstFramePromises: Promise<void>[] = []
         if (internal.workerPool?.isReady()) {
-          // Worker path: load entire first row group → cache ~51 frames at once
-          await loadAndCacheRowGroup(0, set)
+          firstFramePromises.push(loadAndCacheRowGroup(0, set))
         } else {
-          // Main-thread fallback: build lidar frame index, load single frame
           const lidarPf = internal.parquetFiles.get('lidar')
           if (lidarPf) {
-            internal.lidarFrameIndex = await buildHeavyFileFrameIndex(lidarPf)
-            await loadFrameMainThread(0, set, get)
+            firstFramePromises.push(
+              buildHeavyFileFrameIndex(lidarPf).then((idx) => {
+                internal.lidarFrameIndex = idx
+                return loadFrameMainThread(0, set, get)
+              })
+            )
           }
         }
+        if (internal.cameraPool?.isReady()) {
+          firstFramePromises.push(loadAndCacheCameraRowGroup(0, set))
+        }
+        await Promise.all(firstFramePromises)
         const rgMs = performance.now() - rgT0
 
-        // Show first frame (merge camera data if already available)
+        // Show first frame with camera images ready
         const firstFrame = internal.frameCache.get(0)
         if (firstFrame) {
           const camData = internal.cameraImageCache.get(0)
@@ -397,19 +415,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
 
         set({ status: 'ready', loadProgress: 1 })
-
-        // Auto-play after first segment loads
         get().actions.play()
 
-        // 5. Prefetch remaining row groups in background (parallel via worker pool)
-        //    Only when pool is available — in test env, load on demand per loadFrame.
-        //    Guard against duplicate calls from React StrictMode re-renders.
+        // 5. Prefetch remaining row groups in background (LiDAR + Camera)
         if (internal.workerPool?.isReady() && !internal.prefetchStarted) {
           internal.prefetchStarted = true
           prefetchAllRowGroups(set, get)
         }
-
-        // 6. Prefetch camera images in parallel (after lidar starts)
         if (internal.cameraPool?.isReady() && !internal.cameraPrefetchStarted) {
           internal.cameraPrefetchStarted = true
           prefetchAllCameraRowGroups(set)
@@ -546,13 +558,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       // File-based path (drag & drop / folder picker)
       if (internal.filesBySegment?.has(segmentId)) {
         const fileMap = internal.filesBySegment.get(segmentId)!
-        const sources = new Map<string, File | string>()
-        for (const [component, file] of fileMap) {
-          // Convert File → blob URL so workers can fetch it
-          const blobUrl = URL.createObjectURL(file)
-          internal.blobUrls.push(blobUrl)
-          sources.set(component, blobUrl)
-        }
+        // Pass File objects directly — workers can receive them via postMessage
+        const sources = new Map<string, File | string>(fileMap)
         await actions.loadDataset(sources)
         return
       }
@@ -589,6 +596,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         error: null,
         availableComponents: [],
         loadProgress: 0,
+        loadStep: 'opening' as LoadStep,
         totalFrames: 0,
         currentFrameIndex: 0,
         isPlaying: false,
@@ -849,9 +857,7 @@ async function initDataWorker(
   get: () => SceneState,
 ) {
   const lidarSource = sources.get('lidar')
-  if (!lidarSource || typeof lidarSource !== 'string') {
-    return
-  }
+  if (!lidarSource) return
 
   const pool = new WorkerPool(WORKER_CONCURRENCY)
   const { numRowGroups } = await pool.init({
@@ -868,17 +874,14 @@ async function initCameraWorker(
   sources: Map<string, File | string>,
 ) {
   const cameraSource = sources.get('camera_image')
-  if (!cameraSource || typeof cameraSource !== 'string') {
-    return
-  }
+  if (!cameraSource) return
 
-  // Use fewer workers for camera (2) — camera is I/O bound, less CPU needed
   const pool = new CameraWorkerPool(2)
   const { numRowGroups } = await pool.init({ cameraUrl: cameraSource })
 
   internal.cameraPool = pool
   internal.cameraNumRowGroups = numRowGroups
-  useSceneStore.setState({ cameraTotalCount: numRowGroups })
+  useSceneStore.setState({ cameraTotalCount: internal.cameraNumRowGroups })
 }
 
 /** Load + cache a single camera row group */

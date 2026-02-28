@@ -25,7 +25,7 @@ import type { LidarCalibration } from '../utils/rangeImage'
 // ---------------------------------------------------------------------------
 
 export interface WorkerPoolInitOptions {
-  lidarUrl: string
+  lidarUrl: string | File
   calibrationEntries: [number, LidarCalibration][]
 }
 
@@ -92,6 +92,50 @@ export class WorkerPool {
       readyPromises.push(readyPromise)
 
       worker.postMessage({
+        type: 'init',
+        lidarUrl: opts.lidarUrl,
+        calibrationEntries: opts.calibrationEntries,
+      } satisfies DataWorkerRequest)
+    }
+
+    const results = await Promise.all(readyPromises)
+    this.numRowGroups = results[0].numRowGroups
+    return { numRowGroups: this.numRowGroups }
+  }
+
+  /**
+   * Re-initialize existing workers with a new file (skip worker creation).
+   * Much faster than terminate + init — reuses WASM modules.
+   */
+  async reinit(opts: WorkerPoolInitOptions): Promise<{ numRowGroups: number }> {
+    // Clear pending state
+    this.pendingRequests.clear()
+    this.waitQueue = []
+    this.nextRequestId = 0
+
+    const readyPromises: Promise<DataWorkerReady>[] = []
+
+    for (let i = 0; i < this.workers.length; i++) {
+      const pw = this.workers[i]
+      pw.busy = false
+      pw.ready = false
+
+      const readyPromise = new Promise<DataWorkerReady>((resolve, reject) => {
+        pw.worker.onmessage = (e: MessageEvent<DataWorkerResponse>) => {
+          if (e.data.type === 'ready') {
+            pw.ready = true
+            pw.worker.onmessage = (ev: MessageEvent<DataWorkerResponse>) =>
+              this.handleWorkerMessage(i, ev)
+            resolve(e.data)
+          } else if (e.data.type === 'error') {
+            reject(new Error(e.data.message))
+          }
+        }
+      })
+
+      readyPromises.push(readyPromise)
+
+      pw.worker.postMessage({
         type: 'init',
         lidarUrl: opts.lidarUrl,
         calibrationEntries: opts.calibrationEntries,

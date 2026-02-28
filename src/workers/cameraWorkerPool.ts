@@ -18,7 +18,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface CameraPoolInitOptions {
-  cameraUrl: string
+  cameraUrl: string | File
 }
 
 interface PendingRequest {
@@ -83,6 +83,48 @@ export class CameraWorkerPool {
       readyPromises.push(readyPromise)
 
       worker.postMessage({
+        type: 'init',
+        cameraUrl: opts.cameraUrl,
+      } satisfies CameraWorkerRequest)
+    }
+
+    const results = await Promise.all(readyPromises)
+    this.numRowGroups = results[0].numRowGroups
+    return { numRowGroups: this.numRowGroups }
+  }
+
+  /**
+   * Re-initialize existing workers with a new file (skip worker creation).
+   * Much faster than terminate + init — reuses WASM modules.
+   */
+  async reinit(opts: CameraPoolInitOptions): Promise<{ numRowGroups: number }> {
+    this.pendingRequests.clear()
+    this.waitQueue = []
+    this.nextRequestId = 0
+
+    const readyPromises: Promise<CameraWorkerReady>[] = []
+
+    for (let i = 0; i < this.workers.length; i++) {
+      const pw = this.workers[i]
+      pw.busy = false
+      pw.ready = false
+
+      const readyPromise = new Promise<CameraWorkerReady>((resolve, reject) => {
+        pw.worker.onmessage = (e: MessageEvent<CameraWorkerResponse>) => {
+          if (e.data.type === 'ready') {
+            pw.ready = true
+            pw.worker.onmessage = (ev: MessageEvent<CameraWorkerResponse>) =>
+              this.handleWorkerMessage(i, ev)
+            resolve(e.data)
+          } else if (e.data.type === 'error') {
+            reject(new Error(e.data.message))
+          }
+        }
+      })
+
+      readyPromises.push(readyPromise)
+
+      pw.worker.postMessage({
         type: 'init',
         cameraUrl: opts.cameraUrl,
       } satisfies CameraWorkerRequest)

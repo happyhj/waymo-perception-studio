@@ -37,7 +37,7 @@ let calibrations = new Map<number, LidarCalibration>()
 
 export interface DataWorkerInit {
   type: 'init'
-  lidarUrl: string
+  lidarUrl: string | File
   /** Serialized as [laserName, calibration][] since Map can't be postMessage'd */
   calibrationEntries: [number, LidarCalibration][]
 }

@@ -45,19 +45,65 @@ function App() {
   const togglePlayback = useSceneStore((s) => s.actions.togglePlayback)
   const loadFromFiles = useSceneStore((s) => s.actions.loadFromFiles)
 
-  // Global spacebar → play/pause toggle
+  const seekFrame = useSceneStore((s) => s.actions.seekFrame)
+  const nextFrame = useSceneStore((s) => s.actions.nextFrame)
+  const prevFrame = useSceneStore((s) => s.actions.prevFrame)
+
+  const selectSegment = useSceneStore((s) => s.actions.selectSegment)
+
+  // Global keyboard shortcuts:
+  //   Space        = play/pause
+  //   ← →          = ±1 frame
+  //   J / L        = ±10 frames
+  //   Shift+← / →  = prev/next segment
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && status === 'ready') {
-        const tag = (e.target as HTMLElement)?.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      // Shift+Arrow: segment navigation (works even during loading)
+      if (e.shiftKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
         e.preventDefault()
-        togglePlayback()
+        const { availableSegments: segs, currentSegment: cur, status: st } = useSceneStore.getState()
+        if (st === 'loading' || !cur || segs.length <= 1) return
+        const idx = segs.indexOf(cur)
+        if (e.code === 'ArrowLeft' && idx > 0) selectSegment(segs[idx - 1])
+        if (e.code === 'ArrowRight' && idx < segs.length - 1) selectSegment(segs[idx + 1])
+        return
+      }
+
+      if (status !== 'ready') return
+
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault()
+          togglePlayback()
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          nextFrame()
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          prevFrame()
+          break
+        case 'KeyL': {
+          e.preventDefault()
+          const { currentFrameIndex, totalFrames } = useSceneStore.getState()
+          seekFrame(Math.min(currentFrameIndex + 10, totalFrames - 1))
+          break
+        }
+        case 'KeyJ': {
+          e.preventDefault()
+          const { currentFrameIndex } = useSceneStore.getState()
+          seekFrame(Math.max(currentFrameIndex - 10, 0))
+          break
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [status, togglePlayback])
+  }, [status, togglePlayback, nextFrame, prevFrame, seekFrame, selectSegment])
 
   // Show drop zone when no data loaded (idle + no segments)
   const showDropZone = status === 'idle' && availableSegments.length === 0
@@ -491,8 +537,244 @@ function DropZone({ onFilesLoaded }: { onFilesLoaded: (segments: Map<string, Map
 }
 
 // ---------------------------------------------------------------------------
+// Loading Skeleton
+// ---------------------------------------------------------------------------
+
+const LOAD_STEP_LABELS: Record<string, string> = {
+  'opening': 'Opening Parquet files…',
+  'parsing': 'Parsing poses & calibrations…',
+  'workers': 'Initializing workers…',
+  'first-frame': 'Decoding first frame…',
+}
+
+const LOAD_STEPS = ['opening', 'parsing', 'workers', 'first-frame'] as const
+
+/** Shimmer keyframes — injected once */
+const shimmerStyle = `
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+`
+
+/** Minimum time (ms) each step stays visible before advancing */
+const STEP_MIN_MS = 400
+
+function LoadingSkeleton() {
+  const loadProgress = useSceneStore((s) => s.loadProgress)
+  const loadStep = useSceneStore((s) => s.loadStep)
+  const realStepIdx = LOAD_STEPS.indexOf(loadStep as typeof LOAD_STEPS[number])
+
+  // Visual step trails behind the real step with a minimum display time
+  const [displayStepIdx, setDisplayStepIdx] = useState(0)
+  const [displayProgress, setDisplayProgress] = useState(0)
+  const stepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (realStepIdx > displayStepIdx) {
+      // Queue the next visual step with a delay
+      if (stepTimerRef.current) clearTimeout(stepTimerRef.current)
+      stepTimerRef.current = setTimeout(() => {
+        setDisplayStepIdx((prev) => Math.min(prev + 1, realStepIdx))
+      }, STEP_MIN_MS)
+    }
+    return () => { if (stepTimerRef.current) clearTimeout(stepTimerRef.current) }
+  }, [realStepIdx, displayStepIdx])
+
+  // Smooth out progress bar — interpolate towards real value
+  useEffect(() => {
+    const target = loadProgress
+    const step = () => {
+      setDisplayProgress((prev) => {
+        const diff = target - prev
+        if (Math.abs(diff) < 0.005) return target
+        return prev + diff * 0.15
+      })
+    }
+    const id = setInterval(step, 30)
+    return () => clearInterval(id)
+  }, [loadProgress])
+
+  const currentStepIdx = displayStepIdx
+
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      backgroundColor: colors.bgDeep,
+      gap: '16px',
+      padding: '40px',
+    }}>
+      {/* Progress bar + steps — no fake card */}
+      <div style={{ width: '240px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{
+          height: '4px',
+          backgroundColor: colors.bgOverlay,
+          borderRadius: radius.pill,
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%',
+            width: `${Math.round(displayProgress * 100)}%`,
+            background: gradients.accent,
+            borderRadius: radius.pill,
+            transition: 'width 0.3s ease-out',
+          }} />
+        </div>
+
+        {/* Step indicators */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {LOAD_STEPS.map((step, i) => {
+            const isCurrent = i === currentStepIdx
+            const isDone = i < currentStepIdx
+            return (
+              <div key={step} style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '11px',
+                fontFamily: fonts.mono,
+                color: isCurrent ? colors.accent : isDone ? colors.textDim : colors.bgOverlay,
+                transition: 'color 0.3s',
+              }}>
+                <span style={{ width: '14px', textAlign: 'center' }}>
+                  {isDone ? '✓' : isCurrent ? '›' : '·'}
+                </span>
+                {LOAD_STEP_LABELS[step]}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Camera strip skeleton — matches real CameraPanel layout exactly */
+function CameraStripSkeleton() {
+  const shimmerBg = `linear-gradient(90deg, ${colors.bgOverlay} 25%, ${colors.bgSurface} 50%, ${colors.bgOverlay} 75%)`
+  return (
+    <div style={{
+      height: 160,
+      flexShrink: 0,
+      display: 'flex',
+      gap: '6px',
+      padding: '6px 8px',
+      backgroundColor: colors.bgDeep,
+      borderTop: `1px solid ${colors.borderSubtle}`,
+      overflow: 'hidden',
+    }}>
+      <style>{shimmerStyle}</style>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <div key={i} style={{
+          flex: 1,
+          borderRadius: radius.sm,
+          background: shimmerBg,
+          backgroundSize: '200% 100%',
+          animation: 'shimmer 1.5s ease-in-out infinite',
+          animationDelay: `${i * 0.15}s`,
+          opacity: 0.3,
+        }} />
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Views
 // ---------------------------------------------------------------------------
+
+function ShortcutHints() {
+  const [visible, setVisible] = useState(true)
+  const [fading, setFading] = useState(false)
+
+  useEffect(() => {
+    // Toggle with ? key
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === '?') {
+        e.preventDefault()
+        setVisible((v) => !v)
+        setFading(false)
+        return
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Auto-hide: fade after 5s, remove after transition
+  useEffect(() => {
+    if (!visible || fading) return
+    const timer = setTimeout(() => setFading(true), 5000)
+    const hideOnInteract = (e: KeyboardEvent) => {
+      if (e.key === '?') return // let toggle handler deal with it
+      setFading(true)
+    }
+    const hideOnMouse = () => setFading(true)
+    window.addEventListener('keydown', hideOnInteract)
+    window.addEventListener('mousedown', hideOnMouse)
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('keydown', hideOnInteract)
+      window.removeEventListener('mousedown', hideOnMouse)
+    }
+  }, [visible, fading])
+
+  // After fade animation, hide completely
+  useEffect(() => {
+    if (!fading) return
+    const timer = setTimeout(() => setVisible(false), 300)
+    return () => clearTimeout(timer)
+  }, [fading])
+
+  if (!visible) return null
+
+  const keys = [
+    { key: '← →', desc: 'frame' },
+    { key: 'J L', desc: '±10' },
+    { key: 'Space', desc: 'play/pause' },
+    { key: 'Shift+← →', desc: 'segment' },
+    { key: '?', desc: 'shortcuts' },
+  ]
+
+  return (
+    <div style={{
+      position: 'absolute',
+      bottom: '12px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      display: 'flex',
+      gap: '16px',
+      padding: '6px 14px',
+      backgroundColor: 'rgba(0, 0, 0, 0.6)',
+      borderRadius: radius.pill,
+      backdropFilter: 'blur(8px)',
+      zIndex: 10,
+      opacity: fading ? 0 : 1,
+      transition: 'opacity 0.3s ease-out',
+      animation: 'shortcutFadeIn 0.3s ease-out',
+    }}>
+      <style>{`
+        @keyframes shortcutFadeIn { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+      `}</style>
+      {keys.map(({ key, desc }, i) => (
+        <span key={i} style={{
+          fontSize: '10px',
+          fontFamily: fonts.mono,
+          color: colors.textDim,
+          whiteSpace: 'nowrap',
+        }}>
+          <span style={{ color: colors.textSecondary }}>{key}</span> {desc}
+        </span>
+      ))}
+    </div>
+  )
+}
 
 function SensorView() {
   const status = useSceneStore((s) => s.status)
@@ -503,20 +785,12 @@ function SensorView() {
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', inset: 0 }}>
           {status === 'ready' ? (
-            <LidarViewer />
+            <>
+              <LidarViewer />
+              <ShortcutHints />
+            </>
           ) : status === 'loading' ? (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: colors.bgDeep,
-              color: colors.textSecondary,
-              fontFamily: fonts.sans,
-              fontSize: '14px',
-            }}>
-              Loading LiDAR data…
-            </div>
+            <LoadingSkeleton />
           ) : (
             <div style={{
               display: 'flex',
@@ -536,6 +810,7 @@ function SensorView() {
 
       {/* Camera Image Strip — bottom */}
       {status === 'ready' && <CameraPanel />}
+      {status === 'loading' && <CameraStripSkeleton />}
     </div>
   )
 }
