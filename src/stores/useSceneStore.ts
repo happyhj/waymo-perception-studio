@@ -2,11 +2,11 @@
  * Scene store — Zustand-based central state for Waymo Perception Studio.
  *
  * Heavy work (Parquet I/O + BROTLI decompress + LiDAR conversion) runs in
- * a Data Worker — main thread stays free for 60fps rendering.
+ * a pool of N Data Workers — main thread stays free for 60fps rendering.
  *
- * Prefetch strategy: load ALL row groups sequentially (start → end).
+ * Prefetch strategy: load ALL row groups in parallel via WorkerPool.
  * Each row group decompression yields ~51 frames at once — only 4 reads
- * to cache the entire 199-frame segment.
+ * to cache the entire 199-frame segment, now across N concurrent workers.
  *
  * Usage in React:
  *   const pointCloud = useSceneStore(s => s.currentFrame?.pointCloud)
@@ -34,12 +34,9 @@ import {
   type RangeImage,
 } from '../utils/rangeImage'
 import type {
-  DataWorkerRequest,
-  DataWorkerResponse,
   DataWorkerRowGroupResult,
-  FrameResult,
-  SensorCloudResult,
 } from '../workers/dataWorker'
+import { WorkerPool } from '../workers/workerPool'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,6 +105,9 @@ export interface SceneState {
 // Internal state (not exposed to React — no re-renders on mutation)
 // ---------------------------------------------------------------------------
 
+/** Number of parallel workers for row group decompression */
+const WORKER_CONCURRENCY = 4
+
 const internal = {
   parquetFiles: new Map<string, WaymoParquetFile>(),
   timestamps: [] as bigint[],
@@ -118,8 +118,8 @@ const internal = {
   /** No eviction needed — row-group loading caches all ~199 frames, which is the goal. */
   frameCache: new Map<number, FrameData>(),
   playIntervalId: null as ReturnType<typeof setInterval> | null,
-  worker: null as Worker | null,
-  workerReady: false,
+  /** Worker pool for parallel row group loading */
+  workerPool: null as WorkerPool | null,
   numRowGroups: 0,
   /** Track which row groups have been loaded or are in-flight */
   loadedRowGroups: new Set<number>(),
@@ -129,11 +129,6 @@ const internal = {
   lastConvertMs: 0,
   /** Frame index for per-frame fallback (test env / no Worker) */
   lidarFrameIndex: null as FrameRowIndex | null,
-  pendingRequests: new Map<number, {
-    resolve: (result: DataWorkerRowGroupResult) => void
-    reject: (err: Error) => void
-  }>(),
-  nextRequestId: 0,
 }
 
 function resetInternal() {
@@ -149,53 +144,24 @@ function resetInternal() {
     clearInterval(internal.playIntervalId)
     internal.playIntervalId = null
   }
-  if (internal.worker) {
-    internal.worker.terminate()
-    internal.worker = null
-    internal.workerReady = false
+  if (internal.workerPool) {
+    internal.workerPool.terminate()
+    internal.workerPool = null
   }
   internal.numRowGroups = 0
-  internal.pendingRequests.clear()
-  internal.nextRequestId = 0
 }
 
 // ---------------------------------------------------------------------------
-// Worker communication
+// Worker pool communication
 // ---------------------------------------------------------------------------
-
-function postToWorker(msg: DataWorkerRequest) {
-  internal.worker?.postMessage(msg)
-}
 
 function requestRowGroup(
   rowGroupIndex: number,
 ): Promise<DataWorkerRowGroupResult> {
-  return new Promise((resolve, reject) => {
-    const requestId = internal.nextRequestId++
-    internal.pendingRequests.set(requestId, { resolve, reject })
-    postToWorker({
-      type: 'loadRowGroup',
-      requestId,
-      rowGroupIndex,
-    })
-  })
-}
-
-function handleWorkerMessage(e: MessageEvent<DataWorkerResponse>) {
-  const msg = e.data
-
-  if (msg.type === 'rowGroupReady' || msg.type === 'error') {
-    const rid = 'requestId' in msg ? msg.requestId : -1
-    const pending = internal.pendingRequests.get(rid ?? -1)
-    if (pending) {
-      internal.pendingRequests.delete(rid!)
-      if (msg.type === 'error') {
-        pending.reject(new Error(msg.message))
-      } else {
-        pending.resolve(msg)
-      }
-    }
+  if (!internal.workerPool) {
+    return Promise.reject(new Error('Worker pool not initialized'))
   }
+  return internal.workerPool.requestRowGroup(rowGroupIndex)
 }
 
 /** Cache all frames from a row group result into internal.frameCache */
@@ -300,7 +266,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
         // 4. Load first frame
         const rgT0 = performance.now()
-        if (internal.workerReady) {
+        if (internal.workerPool?.isReady()) {
           // Worker path: load entire first row group → cache ~51 frames at once
           await loadAndCacheRowGroup(0, set)
         } else {
@@ -329,10 +295,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         // Auto-play after first segment loads
         get().actions.play()
 
-        // 5. Prefetch remaining row groups in background (start → end)
-        //    Only when Worker is available — in test env, load on demand per loadFrame.
+        // 5. Prefetch remaining row groups in background (parallel via worker pool)
+        //    Only when pool is available — in test env, load on demand per loadFrame.
         //    Guard against duplicate calls from React StrictMode re-renders.
-        if (internal.workerReady && !internal.prefetchStarted) {
+        if (internal.workerPool?.isReady() && !internal.prefetchStarted) {
           internal.prefetchStarted = true
           prefetchAllRowGroups(set, get)
         }
@@ -580,7 +546,7 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
 }
 
 // ---------------------------------------------------------------------------
-// Data Worker init
+// Worker pool init
 // ---------------------------------------------------------------------------
 
 async function initDataWorker(
@@ -592,62 +558,42 @@ async function initDataWorker(
     return
   }
 
-  return new Promise<void>((resolve, reject) => {
-    const worker = new Worker(
-      new URL('../workers/dataWorker.ts', import.meta.url),
-      { type: 'module' },
-    )
-
-    worker.onmessage = (e: MessageEvent<DataWorkerResponse>) => {
-      if (e.data.type === 'ready') {
-        internal.workerReady = true
-        internal.numRowGroups = e.data.numRowGroups
-        worker.onmessage = handleWorkerMessage
-        resolve()
-      } else if (e.data.type === 'error') {
-        reject(new Error(e.data.message))
-      }
-    }
-
-    worker.onerror = (e) => reject(new Error(e.message))
-
-    internal.worker = worker
-
-    const calibEntries = [...get().lidarCalibrations.entries()]
-
-    postToWorker({
-      type: 'init',
-      lidarUrl: lidarSource,
-      calibrationEntries: calibEntries,
-    })
+  const pool = new WorkerPool(WORKER_CONCURRENCY)
+  const { numRowGroups } = await pool.init({
+    lidarUrl: lidarSource,
+    calibrationEntries: [...get().lidarCalibrations.entries()],
   })
+
+  internal.workerPool = pool
+  internal.numRowGroups = numRowGroups
 }
 
 // ---------------------------------------------------------------------------
-// Row-group-level prefetching — load ALL row groups start → end
+// Row-group-level prefetching — load ALL row groups in parallel
 // ---------------------------------------------------------------------------
 
 /**
- * Sequentially load all row groups from the lidar file.
+ * Load all row groups from the lidar file via worker pool.
  * Each RG yields ~51 frames — after 4 RGs, all 199 frames are cached.
- * Sequential (not parallel) to avoid saturating bandwidth.
- */
-/**
- * Sequentially load all row groups from the lidar file via Worker.
- * Each RG yields ~51 frames — after 4 RGs, all 199 frames are cached.
- * Sequential (not parallel) to avoid saturating bandwidth.
+ *
+ * Dispatches ALL remaining row groups at once. The WorkerPool internally
+ * queues them and distributes across N workers (WORKER_CONCURRENCY).
  */
 async function prefetchAllRowGroups(
   set: (partial: Partial<SceneState>) => void,
   _get: () => SceneState,
 ) {
+  const promises: Promise<void>[] = []
+
   for (let rg = 0; rg < internal.numRowGroups; rg++) {
     if (internal.loadedRowGroups.has(rg)) continue
 
-    try {
-      await loadAndCacheRowGroup(rg, set)
-    } catch {
-      // Non-critical: prefetch failure doesn't block user interaction
-    }
+    promises.push(
+      loadAndCacheRowGroup(rg, set).catch(() => {
+        // Non-critical: prefetch failure doesn't block user interaction
+      }),
+    )
   }
+
+  await Promise.all(promises)
 }

@@ -488,6 +488,47 @@ Chronological record of technical decisions and the reasoning behind them.
   - **(A) Zustand 채택**: selector 기반 슬라이스 구독으로 불필요한 리렌더 없음. React 밖에서 `getState()` 접근 가능 (Worker 결과 반영 등). ~1KB. 보일러플레이트 최소. 나중에 `devtools`/`persist` middleware 필요하면 한 줄 추가로 끝.
 - **구현**: `useSceneStore` — Zustand store에 state + actions 통합. 내부 데이터(Parquet files, frame indices, cache)는 모듈 스코프에 분리하여 React 리렌더에서 제외.
 
+### D19. Azimuth correction — Waymo SDK의 `az_correction` 재현
+
+- **문제**: FRONT/REAR/SIDE 센서의 포인트 클라우드가 차량 기준으로 잘못된 방향에 뿌려짐. FRONT와 REAR가 시각적으로 뒤바뀌어 보임.
+- **원인 분석**: Waymo SDK의 `compute_range_image_polar()` 코드를 확인한 결과, column→azimuth 매핑에 **센서 yaw 보정값**이 필요함을 발견:
+  ```python
+  az_correction = atan2(extrinsic[1][0], extrinsic[0][0])  # 센서의 yaw 각도
+  azimuth = (ratio * 2 - 1) * π - az_correction
+  ```
+  이 보정 없이는 모든 센서가 동일한 column→azimuth 매핑을 사용하게 되어, yaw가 큰 센서(REAR: -179°, SIDE: ±90°)에서 방향이 크게 틀어짐. FRONT(yaw≈1°)는 거의 영향 없음.
+- **해결**: `computeAzimuths(width, azCorrection)` 함수에 `azCorrection` 파라미터 추가. `convertRangeImageToPointCloud()`에서 extrinsic으로부터 `atan2(e[4], e[0])` 계산하여 전달.
+- **추가 수정 — TOP 센서 inclination 반전**: TOP의 non-uniform `beam_inclination.values`가 ascending 순서(min→max)로 저장되어 있으나, range image의 row 0 = max(상단). 배열을 역순으로 읽어 uniform 센서와 동일한 descending 컨벤션으로 맞춤.
+- **검증 방법**: 각 센서의 extrinsic 4×4 행렬에서 yaw/pitch/roll, translation, sensor-forward 방향을 추출하여 물리적 장착 위치와 대조:
+  - FRONT: yaw=1°, tx=4.07m (전방 장착, 정면 방향) ✓
+  - REAR: yaw=-179°, tx=-1.16m (후방 장착, 후방 방향) ✓
+  - SIDE_LEFT: yaw=90°, tx=3.24m, ty=1.03m (좌측 전방, 왼쪽 방향) ✓
+  - SIDE_RIGHT: yaw=-89°, tx=3.24m, ty=-1.03m (우측 전방, 오른쪽 방향) ✓
+  - TOP: yaw=148°, tz=2.18m (지붕 위, 360° 회전) ✓
+- **lidar_pose**: Waymo v2의 `lidar_pose` 컴포넌트 분석 결과, TOP 센서만 199행(프레임당 1행), shape `[64, 2650, 6]`의 per-pixel vehicle pose 제공. ego-motion 보정용으로 ~1m 위치 왜곡을 줄이지만, 방향성 오류의 원인은 아님. MVP에서는 미적용.
+
+### D20. Worker Pool — 병렬 row group 디컴프레션
+
+- **문제**: 4개 row group을 순차 로딩하면 전체 세그먼트(199프레임) 캐싱에 row group 1개 시간 × 4 소요.
+- **해결**: `WorkerPool` 클래스 도입. N개의 독립 Data Worker를 생성하여 row group을 병렬 디컴프레스.
+  ```
+  WorkerPool (concurrency=4)
+    ├── Worker 0: init(lidarUrl, calibrations) → loadRowGroup(0)
+    ├── Worker 1: init(lidarUrl, calibrations) → loadRowGroup(1)
+    ├── Worker 2: init(lidarUrl, calibrations) → loadRowGroup(2)
+    └── Worker 3: init(lidarUrl, calibrations) → loadRowGroup(3)
+  ```
+- **설계 결정사항**:
+  - 각 Worker가 독립적으로 Parquet 파일을 open — row group 간 데이터 의존성 없으므로 안전.
+  - `WORKER_CONCURRENCY = 4` 상수로 조절 가능. 4개 row group에 4개 Worker = 이론적 ~4배 속도.
+  - WorkerPool 내부에 idle worker 탐지 + 대기 큐 구현. 모든 Worker busy 시 요청이 큐에 들어가고, Worker 완료 시 자동 dispatch.
+  - `prefetchAllRowGroups()`가 모든 row group을 `Promise.all`로 한번에 dispatch — Pool이 내부적으로 분배.
+- **사이드 이펙트 분석**:
+  - 메모리: Worker당 디컴프레스 버퍼 동시 점유. 4개 RG × ~40MB = ~160MB 피크. 데스크탑에서는 문제없음.
+  - 프레임 순서: row group 완료 순서가 비결정적이지만, `cacheRowGroupFrames()`가 timestamp 기반으로 frameCache에 삽입하므로 순서 무관.
+  - I/O: 로컬 파일(File API)은 병렬 slice 호출 가능. URL 기반은 브라우저 커넥션 제한(도메인당 6개)에 주의 필요하나, 4개는 안전 범위.
+- **결과**: 1개 row group 로딩 시간에 4개가 동시 완료 — 전체 세그먼트가 거의 즉시 캐싱됨.
+
 ## 11. Next Actions
 
 1. ✅ Project scaffolding (Vite + React + TS + R3F)
