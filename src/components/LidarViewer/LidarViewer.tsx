@@ -9,6 +9,7 @@
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei'
 import PointCloud from './PointCloud'
+import BoundingBoxes from './BoundingBoxes'
 import { useSceneStore } from '../../stores/useSceneStore'
 
 const SENSOR_INFO: { id: number; label: string; color: string }[] = [
@@ -23,6 +24,10 @@ export default function LidarViewer() {
   const visibleSensors = useSceneStore((s) => s.visibleSensors)
   const toggleSensor = useSceneStore((s) => s.actions.toggleSensor)
   const sensorClouds = useSceneStore((s) => s.currentFrame?.sensorClouds)
+  const boxMode = useSceneStore((s) => s.boxMode)
+  const cycleBoxMode = useSceneStore((s) => s.actions.cycleBoxMode)
+  const trailLength = useSceneStore((s) => s.trailLength)
+  const setTrailLength = useSceneStore((s) => s.actions.setTrailLength)
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -40,8 +45,11 @@ export default function LidarViewer() {
           gl.setClearColor('#1a1a2e')
         }}
       >
-        <ambientLight intensity={0.5} />
+        <ambientLight intensity={0.3} />
+        <directionalLight position={[50, -30, 80]} intensity={1.0} />
+        <directionalLight position={[-30, 40, 20]} intensity={0.4} />
         <PointCloud />
+        <BoundingBoxes />
 
         {/* Ground grid (XY plane, Z=0) */}
         <gridHelper
@@ -117,6 +125,51 @@ export default function LidarViewer() {
             </button>
           )
         })}
+
+        {/* Perception: box mode toggle + trail slider */}
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <button
+            onClick={cycleBoxMode}
+            style={{
+              padding: '3px 8px',
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              border: 'none',
+              borderRadius: '3px',
+              cursor: 'pointer',
+              backgroundColor: boxMode !== 'off' ? 'rgba(233, 69, 96, 0.7)' : 'rgba(22, 33, 62, 0.6)',
+              color: boxMode !== 'off' ? '#fff' : '#8892a0',
+            }}
+          >
+            {boxMode === 'off' ? 'DETECT OFF' : boxMode === 'box' ? 'DETECT BOX' : 'DETECT 3D'}
+          </button>
+
+          {boxMode !== 'off' && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '3px 8px',
+              backgroundColor: 'rgba(22, 33, 62, 0.85)',
+              borderRadius: '3px',
+            }}>
+              <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#8892a0', whiteSpace: 'nowrap' }}>
+                TRAIL
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={trailLength}
+                onChange={(e) => setTrailLength(Number(e.target.value))}
+                style={{ width: 60, height: 2, accentColor: '#e94560' }}
+              />
+              <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#e0e0e0', minWidth: 16, textAlign: 'right' }}>
+                {trailLength}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

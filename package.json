@@ -15,6 +15,7 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@types/three": "^0.183.1",
+    "fbx2gltf": "^0.9.7-p1",
     "hyparquet": "^1.25.1",
     "hyparquet-compressors": "^1.1.1",
     "react": "^19.2.0",

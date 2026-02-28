@@ -33,6 +33,15 @@ export const BoxType = {
 } as const
 export type BoxType = (typeof BoxType)[keyof typeof BoxType]
 
+/** Color palette per box type */
+export const BOX_TYPE_COLORS: Record<number, string> = {
+  [BoxType.TYPE_UNKNOWN]: '#888888',
+  [BoxType.TYPE_VEHICLE]: '#00d4ff',
+  [BoxType.TYPE_PEDESTRIAN]: '#ffff00',
+  [BoxType.TYPE_SIGN]: '#4d80ff',
+  [BoxType.TYPE_CYCLIST]: '#ff6600',
+}
+
 /** A single LiDAR point */
 export interface LidarPoint {
   x: number

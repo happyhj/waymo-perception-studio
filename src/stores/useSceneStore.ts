@@ -46,6 +46,7 @@ import { CameraWorkerPool } from '../workers/cameraWorkerPool'
 // ---------------------------------------------------------------------------
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type BoxMode = 'off' | 'box' | 'model'
 
 export interface FrameData {
   timestamp: bigint
@@ -68,6 +69,8 @@ interface SceneActions {
   togglePlayback: () => void
   setPlaybackSpeed: (speed: number) => void
   toggleSensor: (laserName: number) => void
+  cycleBoxMode: () => void
+  setTrailLength: (len: number) => void
   reset: () => void
 }
 
@@ -104,6 +107,10 @@ export interface SceneState {
   cameraTotalCount: number
   /** Which sensors are visible (1=TOP,2=FRONT,3=SIDE_LEFT,4=SIDE_RIGHT,5=REAR) */
   visibleSensors: Set<number>
+  /** Bounding box / model display mode */
+  boxMode: BoxMode
+  /** Number of past frames to show in trajectory trail (0 = off) */
+  trailLength: number
   // Actions
   actions: SceneActions
 }
@@ -145,6 +152,8 @@ const internal = {
   lastConvertMs: 0,
   /** Frame index for per-frame fallback (test env / no Worker) */
   lidarFrameIndex: null as FrameRowIndex | null,
+  /** Object trajectory index: objectId → sorted array of {frameIndex, x, y, z, type} */
+  objectTrajectories: new Map<string, { frameIndex: number; x: number; y: number; z: number; type: number }[]>(),
 }
 
 function resetInternal() {
@@ -155,6 +164,7 @@ function resetInternal() {
   internal.vehiclePoseByFrame.clear()
   internal.frameCache.clear()
   internal.cameraImageCache.clear()
+  internal.objectTrajectories.clear()
   internal.loadedRowGroups.clear()
   internal.prefetchStarted = false
   if (internal.playIntervalId !== null) {
@@ -276,6 +286,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   cameraLoadedCount: 0,
   cameraTotalCount: 0,
   visibleSensors: new Set([1, 2, 3, 4, 5]),
+  boxMode: 'box' as BoxMode,
+  trailLength: 20,
 
   actions: {
     loadDataset: async (sources) => {
@@ -441,6 +453,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       set({ visibleSensors: next })
     },
 
+    cycleBoxMode: () => {
+      const order: BoxMode[] = ['off', 'box', 'model']
+      const cur = order.indexOf(get().boxMode)
+      set({ boxMode: order[(cur + 1) % order.length] })
+    },
+
+    setTrailLength: (len: number) => {
+      set({ trailLength: Math.max(0, Math.min(199, len)) })
+    },
+
     reset: () => {
       get().actions.pause()
       resetInternal()
@@ -462,6 +484,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         cameraLoadedCount: 0,
         cameraTotalCount: 0,
         visibleSensors: new Set([1, 2, 3, 4, 5]),
+        boxMode: 'box' as BoxMode,
+        trailLength: 20,
       })
     },
   },
@@ -608,6 +632,33 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
   if (lidarBoxPf) {
     const rows = await readAllRows(lidarBoxPf)
     internal.lidarBoxByFrame = groupIndexBy(rows, 'key.frame_timestamp_micros')
+
+    // Build object trajectory index (objectId → sorted positions by frame)
+    for (const row of rows) {
+      const objectId = row['key.laser_object_id'] as string | undefined
+      if (!objectId) continue
+      const cx = row['[LiDARBoxComponent].box.center.x'] as number | undefined
+      const cy = row['[LiDARBoxComponent].box.center.y'] as number | undefined
+      const cz = row['[LiDARBoxComponent].box.center.z'] as number | undefined
+      const type = (row['[LiDARBoxComponent].type'] as number) ?? 0
+      if (cx == null || cy == null || cz == null) continue
+
+      const ts = row['key.frame_timestamp_micros'] as bigint
+      const fi = internal.timestampToFrame.get(ts)
+      if (fi === undefined) continue
+
+      let trail = internal.objectTrajectories.get(objectId)
+      if (!trail) {
+        trail = []
+        internal.objectTrajectories.set(objectId, trail)
+      }
+      trail.push({ frameIndex: fi, x: cx, y: cy, z: cz, type })
+    }
+
+    // Sort each trajectory by frame index
+    for (const trail of internal.objectTrajectories.values()) {
+      trail.sort((a, b) => a.frameIndex - b.frameIndex)
+    }
   }
 }
 
@@ -728,4 +779,12 @@ async function prefetchAllRowGroups(
   }
 
   await Promise.all(promises)
+}
+
+// ---------------------------------------------------------------------------
+// Public accessor for internal trajectory data (not reactive — static after load)
+// ---------------------------------------------------------------------------
+
+export function getObjectTrajectories() {
+  return internal.objectTrajectories
 }
