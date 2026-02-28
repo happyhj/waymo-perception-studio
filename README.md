@@ -18,7 +18,7 @@ gcloud auth login
 
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
 
-# Essential components (the 6 used by the viewer)
+# The 6 components used by the viewer
 COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
 
 # Create local data directories
@@ -32,20 +32,6 @@ for SEGMENT in $SEGMENTS; do
   for COMP in $COMPONENTS; do
     gsutil -m cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/" 2>/dev/null
   done
-done
-```
-
-To download a specific segment or all 17 components, use the manual approach:
-
-```bash
-SEGMENT="10023947602400723454_1120_000_1140_000"
-for COMP in \
-  lidar lidar_box lidar_calibration lidar_pose lidar_segmentation lidar_hkp \
-  lidar_camera_projection lidar_camera_synced_box \
-  camera_image camera_box camera_calibration camera_segmentation camera_hkp \
-  camera_to_lidar_box_association projected_lidar_box \
-  vehicle_pose stats; do
-  gsutil -m cp $BUCKET/$COMP/$SEGMENT.parquet waymo_data/$COMP/
 done
 ```
 
@@ -91,30 +77,30 @@ Each segment is an independent **20-second driving clip** at **10Hz** (~200 fram
 
 | Component | Description | Use |
 |-----------|-------------|-----|
-| `lidar` | Range images from 5 LiDAR sensors (~200K points/frame) | Point cloud rendering |
-| `lidar_box` | 3D bounding boxes with heading, speed, type, `laser_object_id` | Box visualization + tracking |
-| `lidar_calibration` | Extrinsic transforms per LiDAR sensor | Coordinate transforms |
-| `lidar_pose` | Per-point ego-motion correction | Point cloud accuracy |
-| `lidar_segmentation` | Semantic segmentation per LiDAR point | Point coloring |
-| `lidar_hkp` | Human keypoints from LiDAR | Pedestrian pose |
-| `lidar_camera_projection` | LiDAR-to-camera point mapping | Cross-modal overlay |
-| `lidar_camera_synced_box` | Synced boxes across LiDAR & camera | Consistent annotations |
-| `camera_image` | Images from 5 cameras (FRONT, FL, FR, SL, SR) | Camera panels |
-| `camera_box` | 2D bounding boxes per camera | Image overlay |
-| `camera_calibration` | Intrinsic/extrinsic per camera | Projection math |
-| `camera_segmentation` | Semantic segmentation masks | Image overlay |
-| `camera_hkp` | Human keypoints from camera | Pedestrian pose |
-| `camera_to_lidar_box_association` | Links camera boxes to LiDAR boxes | Cross-modal matching |
-| `projected_lidar_box` | 3D boxes projected onto camera images | Image overlay |
-| `vehicle_pose` | Ego vehicle world transform (4x4 matrix) | Global coordinates |
-| `stats` | Time of day, location, weather, object counts | Segment metadata |
+| `lidar` | Range images from 5 LiDAR sensors (~200K points/frame) | **Point cloud rendering** |
+| `lidar_box` | 3D bounding boxes with heading, speed, type, `laser_object_id` | **Box visualization + tracking** |
+| `lidar_calibration` | Extrinsic transforms per LiDAR sensor | **Coordinate transforms** |
+| `camera_image` | Images from 5 cameras (FRONT, FL, FR, SL, SR) | **Camera panels** |
+| `camera_calibration` | Intrinsic/extrinsic per camera | **Frustum visualization** |
+| `vehicle_pose` | Ego vehicle world transform (4x4 matrix) | **Global coordinates** |
+| `lidar_pose` | Per-point ego-motion correction | Future: point cloud accuracy |
+| `lidar_camera_projection` | LiDAR-to-camera point mapping | Future: cross-modal overlay |
+| `camera_box` | 2D bounding boxes per camera | Future: image overlay |
+| `projected_lidar_box` | 3D boxes projected onto camera images | Future: image overlay |
+| `lidar_segmentation` | Semantic segmentation per LiDAR point | Sparse coverage, not used |
+| `camera_segmentation` | Semantic segmentation masks (1Hz) | Sparse coverage, not used |
+| `lidar_hkp` | Human keypoints from LiDAR | Future: pedestrian pose |
+| `camera_hkp` | Human keypoints from camera | Future: pedestrian pose |
+| `lidar_camera_synced_box` | Synced boxes across LiDAR & camera | Future |
+| `camera_to_lidar_box_association` | Links camera boxes to LiDAR boxes | Future |
+| `stats` | Time of day, location, weather, object counts | Future: metadata display |
 
 ## Tech Stack
 
 - **Frontend**: React 19 + Vite 7 + TypeScript 5.9
 - **3D**: @react-three/fiber + drei
 - **3DGS**: gsplat.js
-- **Data**: parquet-wasm / hyparquet (browser-native Parquet reading)
+- **Data**: hyparquet + hyparquet-compressors (browser-native Parquet reading with BROTLI support)
 
 ## Browser Support
 

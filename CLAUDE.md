@@ -5,7 +5,7 @@ Browser-based 3D visualization tool for Waymo Open Dataset v2.0.
 ## Quick Context
 - **Detailed technical plan**: `docs/TECHNICAL_PLAN.md` (read for architecture decisions, data schemas, reasoning)
 - Zero-install: browser-only, no server, no Python
-- Parquet native: `hyparquet` for browser parsing with row-group random access
+- Parquet native: `hyparquet` + `hyparquet-compressors` (BROTLI) for browser parsing with row-group random access
 - LiDAR data is **range images** (not xyz) — must convert spherical→cartesian in Web Worker
 - 3DGS .ply is bundled (Waymo license allows trained weight distribution)
 
@@ -15,12 +15,29 @@ React 19 + Vite 7 + TypeScript 5.9 + @react-three/fiber + drei + gsplat.js + hyp
 ## Structure
 ```
 src/
-├── components/    # Layout, CameraPanel, LidarViewer, BEVViewer, Timeline, Controls
-├── hooks/         # useDataLoader, usePlayback, usePointCloud
-├── workers/       # Web Worker for Parquet/range-image parsing
-├── utils/         # coordinate transforms, calibration math
-├── types/         # waymo.ts (v2.0 type definitions)
-└── stores/        # App state
+├── components/
+│   ├── LidarViewer/    # 3D point cloud + bounding boxes + camera frustums + trajectory trails
+│   │   ├── LidarViewer.tsx    # Canvas, OrbitControls, sensor/box toggles, trail slider
+│   │   ├── PointCloud.tsx     # Point cloud renderer (turbo colormap, per-sensor coloring)
+│   │   ├── BoundingBoxes.tsx  # 3D boxes (wireframe or GLB models) with tracking colors
+│   │   └── CameraFrustums.tsx # Camera FOV frustums with hover highlight
+│   ├── CameraPanel/    # 5 camera image strip with POV switching + hover highlight
+│   └── Timeline/       # Frame scrubber + play/pause + speed control + buffer bar
+├── workers/
+│   ├── dataWorker.ts        # Parquet I/O + range image→xyz (runs in Web Worker)
+│   ├── workerPool.ts        # N-worker pool for parallel row group decompression
+│   ├── cameraWorker.ts      # Camera JPEG extraction (separate worker)
+│   └── cameraWorkerPool.ts  # Camera worker pool (2 workers)
+├── stores/
+│   └── useSceneStore.ts     # Zustand central state + all data loading logic
+├── utils/
+│   ├── parquet.ts       # hyparquet wrapper (AsyncBuffer, row-group reads)
+│   ├── rangeImage.ts    # Spherical→cartesian conversion math
+│   ├── rangeImageGpu.ts # WebGPU compute shader (unused in current build)
+│   └── merge.ts         # Component merge (JS port of Waymo v2.merge())
+├── types/
+│   └── waymo.ts         # v2.0 type definitions (CameraName, LaserName, BoxType)
+└── App.tsx              # Layout + segment selector + spacebar play/pause
 ```
 
 ## Commands
@@ -28,7 +45,21 @@ src/
 npm run dev     # Start dev server
 npm run build   # Type-check + build
 npm run lint    # ESLint
+npm test        # Vitest (27 tests)
 ```
 
+## Key Features (Implemented)
+- Multi-segment support with dropdown selector (auto-discovers segments from waymo_data/)
+- LiDAR point cloud: 5 sensors, ~168K points/frame, turbo colormap, per-sensor toggle/coloring
+- 3D bounding boxes: wireframe or GLB models (car/pedestrian/cyclist), tracking ID rainbow colors
+- Trajectory trails: past N frames of object positions as fading polylines
+- 5 camera image panels: preloaded JPEG, POV switching, hover↔frustum highlight
+- Camera frustum visualization in 3D view with hover sync
+- Timeline: scrubber, play/pause (spacebar), speed control (0.5x–4x), YouTube-style buffer bar
+- Parallel worker pools: 4 lidar workers + 2 camera workers for fast row group decompression
+
+## Data Components Used
+6 essential: `vehicle_pose`, `lidar_calibration`, `camera_calibration`, `lidar_box`, `lidar`, `camera_image`
+
 ## Current Phase
-Phase 1 MVP — Parquet loading + LiDAR point cloud + bounding boxes + timeline
+Phase 2 — Camera views + 3D perception features complete. Next: 3DGS BEV integration.

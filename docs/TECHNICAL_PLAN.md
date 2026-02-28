@@ -86,20 +86,18 @@ Apply 4×4 extrinsic matrix from `lidar_calibration`:
 
 `lidar_pose` provides a per-pixel vehicle pose for the TOP LiDAR to correct rolling shutter distortion. Other 4 LiDARs don't need this (their sweep is fast enough). For MVP, this step can be deferred — the visual difference is subtle.
 
-#### Conversion Strategy: WebGPU Compute Shader + CPU Web Worker Fallback
+#### Conversion Strategy: CPU Web Worker Pool (WebGPU deferred)
 
-The conversion is **embarrassingly parallel** — each pixel is independent (cos, sin, matrix mul). Two implementations:
+The conversion is **embarrassingly parallel** — each pixel is independent (cos, sin, matrix mul).
 
-- **WebGPU Compute Shader** (primary): 649K pixels as GPU threads. Expected ~1-2ms/frame. Available in Chrome, Edge, Safari 17.4+.
-- **CPU Web Worker** (fallback): For Firefox and older browsers. Expected ~30-50ms/frame.
-
-Both paths share the same math; only the execution environment differs. Benchmark comparison in README demonstrates the speedup.
+- **CPU Web Worker Pool** (current): 4 parallel workers, each processing a row group (~51 frames). ~5ms/frame for all 5 sensors (~168K points). Fast enough for 10Hz playback.
+- **WebGPU Compute Shader** (implemented but unused): `rangeImageGpu.ts` exists with working compute shader. Deferred because CPU Worker Pool + row-group batching already achieves <5ms/frame, and WebGPU adds browser compatibility concerns.
 
 ```
 src/utils/rangeImage.ts        ← Pure conversion math (shared, testable)
-src/workers/lidarWorker.ts     ← CPU fallback (Web Worker)
-src/utils/rangeImageGpu.ts     ← WebGPU compute shader
-src/hooks/useLidarConverter.ts ← Auto-selects GPU or Worker
+src/workers/dataWorker.ts      ← Parquet I/O + conversion in Web Worker
+src/workers/workerPool.ts      ← N-worker pool for parallel row group processing
+src/utils/rangeImageGpu.ts     ← WebGPU compute shader (unused, available for future)
 ```
 
 #### Gotchas from Waymo SDK Issues
@@ -228,36 +226,44 @@ erksch doesn't do this conversion in the browser at all. Python server calls `fr
 | Server | Python + TF | Desktop App | **None (browser)** |
 | LiDAR | ✅ | ✅ | ✅ |
 | Camera | ❌ | ✅ | ✅ |
-| Segmentation | ❌ | ✅ | ✅ |
+| Segmentation | ❌ | ✅ | ❌ (sparse data) |
 | Dual 3D View | ❌ | ✅ | ✅ |
 | 3DGS BEV | ❌ | ❌ | **✅ Killer Feature** |
 
-## 4. Visualization Features
+## 4. Visualization Features (Implemented)
 
-- **Tracking ID color mapping**: `key.laser_object_id` persistent across frames. Rainbow colormap per ID.
-- **3D vehicle OBJ models**: BoxType-specific meshes (car, pedestrian, cyclist) instead of wireframe boxes.
-- **Camera frustum visualization**: Semi-transparent frustums in 3D view showing each camera's FOV.
+- **LiDAR point cloud**: 5 sensors (~168K points/frame), turbo colormap by intensity, per-sensor visibility toggle with sensor-specific coloring.
+- **3D bounding boxes**: Wireframe or GLB model mode (car/pedestrian/cyclist). Tracking ID → rainbow colormap per `laser_object_id`.
+- **Trajectory trails**: Past N frames of each tracked object's position rendered as fading polylines. Slider UI (0–199 frames).
+- **Camera frustum visualization**: Wire frustums from camera intrinsic/extrinsic. Hover highlight sync with camera panel.
+- **5 camera panels**: Horizontal strip (SL, FL, F, FR, SR). Preloaded JPEG with broken-image prevention. POV switching on click.
+- **Timeline**: Frame scrubber, play/pause (spacebar), speed control (0.5x–4x), YouTube-style buffer bar showing cached frames.
+- **Multi-segment**: Auto-discovers segments from `waymo_data/`, dropdown selector in header.
 
 ## 5. UI Design
 
 Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 
-### Sensor View
+### Sensor View (Current Layout)
 ```
-┌────────────────────────┬─────────────────────────┐
-│ Camera Views (5)       │ Bird's Eye View         │
-│ FL | F | FR            │ (3DGS or LiDAR BEV)     │
-│ SL |   | SR            │                         │
-├────────────────────────┴─────────────────────────┤
-│ 3D LiDAR View (point cloud + bbox, OrbitControls)│
+┌──────────────────────────────────────────────────┐
+│ [Segment Selector ▾]            waymo-perception  │ ← Header (visible when >1 segment)
 ├──────────────────────────────────────────────────┤
-│ ◀ ▶  ────●──────────── 00:05/00:20   1x         │
+│                                                    │
+│   3D LiDAR View                                    │ ← Main viewport
+│   (point cloud + bounding boxes + frustums         │    OrbitControls or camera POV
+│    + trajectory trails)                            │
+│                              [Sensor toggles]      │ ← Right panel overlay
+│                              [BOX: MODE]           │
+│                              [TRAIL: slider]       │
+│                                                    │
+├──────────────────────────────────────────────────┤
+│ SL | FL | FRONT | FR | SR                          │ ← Camera strip (160px)
+│ (click = POV toggle, hover = frustum highlight)    │
+├──────────────────────────────────────────────────┤
+│ ◀ ▶  ────●──────────── 042/199   ×1   SPACE=⏯    │ ← Timeline + buffer bar
 └──────────────────────────────────────────────────┘
 ```
-
-### Data Loading Screen
-- "Open Waymo Dataset Folder" button + folder drag & drop
-- After load: component checklist (lidar ✅ camera ✅ segmentation ❌ etc.)
 
 ### 3DGS Lab
 - Full viewport gsplat.js renderer with pre-built .ply
@@ -265,11 +271,11 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 
 ## 6. Implementation Phases
 
-1. **MVP (2 days)**: Parquet loading + LiDAR point cloud (range image→xyz) + bounding boxes + timeline
-2. **Camera (1 day)**: 5 camera panels + Camera-LiDAR sync + segmentation overlay
-3. **Dual View (0.5 day)**: Aerial + Perspective split
-4. **3DGS BEV (1 day)**: Street Gaussians training + .ply export + gsplat.js renderer
-5. **Polish (0.5 day)**: README, deployment, demo GIF, LinkedIn post
+1. ✅ **MVP (2 days)**: Parquet loading + LiDAR point cloud (range image→xyz) + bounding boxes + timeline
+2. ✅ **Camera + Perception (1.5 days)**: 5 camera panels with parallel worker loading + Camera-LiDAR sync + POV switching + camera frustum visualization + hover highlight sync
+3. ✅ **Multi-segment + Polish (0.5 day)**: Segment auto-discovery + dropdown selector + spacebar play/pause + trajectory trails
+4. ⬜ **3DGS BEV (1 day)**: Street Gaussians training + .ply export + gsplat.js renderer
+5. ⬜ **Polish (0.5 day)**: README, deployment, demo GIF, LinkedIn post
 
 ## 7. 3DGS Strategy
 
@@ -355,9 +361,10 @@ Chronological record of technical decisions and the reasoning behind them.
 - **Discovery**: `lidar_box` has `key.laser_object_id` that persists across frames for the same physical object. 115 unique objects in sample segment.
 - **Impact**: Assign color per object ID with rainbow colormap → automatic tracking visualization with no additional ML. Same color = same car across 20 seconds.
 
-### D10. Camera segmentation is 1Hz, not 10Hz
+### D10. Camera segmentation is 1Hz, not 10Hz (segmentation removed — see D24)
 - **Discovery**: `camera_segmentation` has 100 rows (5 cameras × 20 frames), not 995. Segmentation is sampled at 1Hz.
-- **Impact**: Segmentation overlay only updates every 10 frames. UI should indicate when segmentation data is available vs interpolated/unavailable.
+- **Further discovery**: Segmentation data only exists for 1 of 9 downloaded segments, and only ~10 of 199 frames have lidar segmentation labels. Too sparse to be useful.
+- **Outcome**: Segmentation feature entirely removed in D24.
 
 ### D11. Parquet row-group structure enables lazy loading without preprocessing
 - **Discovery**: lidar file has 4 row groups (~50 frames each). camera_image also has 4 row groups. Browser can read specific row groups without loading the entire file.
@@ -529,14 +536,60 @@ Chronological record of technical decisions and the reasoning behind them.
   - I/O: 로컬 파일(File API)은 병렬 slice 호출 가능. URL 기반은 브라우저 커넥션 제한(도메인당 6개)에 주의 필요하나, 4개는 안전 범위.
 - **결과**: 1개 row group 로딩 시간에 4개가 동시 완료 — 전체 세그먼트가 거의 즉시 캐싱됨.
 
-## 11. Next Actions
+### D21. Camera Worker Pool — 카메라 JPEG 디코딩 분리
+
+- **문제**: 카메라 이미지(328MB)도 BROTLI 해제 + Parquet 디코딩이 필요. LiDAR Worker와 동일 Worker에서 처리하면 카메라 로딩이 LiDAR 프레임 캐싱을 블로킹.
+- **해결**: `CameraWorkerPool` 별도 구현 (2개 Worker). 카메라는 I/O bound이므로 LiDAR(4개)보다 적은 Worker로 충분.
+- **아키텍처**: `cameraWorker.ts`가 camera_image Parquet을 열고, row group 단위로 JPEG ArrayBuffer를 추출. 메인 스레드에서 `cameraImageCache`에 별도 저장 (LiDAR frameCache와 독립).
+- **JPEG 무결성**: `hyparquet`의 `utf8: false` 옵션으로 바이너리 원본 보존. `new Image()` preloading으로 디코딩 완료 후에만 src swap — 깨진 이미지 아이콘 방지.
+
+### D22. Camera Frustum Visualization + POV Switching
+
+- **카메라 프러스텀**: `camera_calibration`의 intrinsic (f_u, f_v, c_u, c_v, width, height) + extrinsic (4×4 matrix)으로 각 카메라의 시야각(FOV)을 3D 공간에 사다리꼴 와이어프레임으로 렌더링.
+  - FOV 계산: `fovX = 2 * atan(width / (2 * f_u))`, `fovY = 2 * atan(height / (2 * f_v))`
+  - Near plane에 4개 코너 포인트 생성 → extrinsic 역행렬로 vehicle frame 변환
+  - `THREE.LineSegments`로 렌더링 (origin → 4 corners + 4 edges)
+- **POV 전환**: 카메라 패널 클릭 시 `activeCam` 상태 설정 → OrbitControls 비활성화 → `camera.position`/`lookAt`을 해당 카메라의 extrinsic에서 추출한 위치/방향으로 설정. 다시 클릭하면 orbital 모드로 복귀.
+- **Hover highlight sync**: 카메라 패널 hover → `hoveredCam` 상태 → CameraFrustums에서 해당 프러스텀을 흰색 + 불투명도 1.0으로 강조. 나머지는 dim (0.25).
+
+### D23. Multi-Segment Support
+
+- **자동 탐색**: `waymo_data/vehicle_pose/` 폴더의 `.parquet` 파일 목록에서 세그먼트 ID 추출. `fetch()` + HTTP status로 존재 여부 확인.
+- **UI**: 세그먼트가 2개 이상이면 헤더에 `<select>` 드롭다운 표시. 선택 시 `reset()` → 새 세그먼트의 6개 Parquet 파일 열기 → Worker 재초기화 → 프리페치.
+- **에러 처리**: `openParquetFile()`을 try/catch로 감싸서 optional 컴포넌트(segmentation 등)가 없을 때 graceful skip. `console.warn`으로 로깅만.
+
+### D24. Segmentation 제거 결정
+
+- **배경**: lidar_segmentation + camera_segmentation 시각화를 구현 시도.
+- **발견된 문제**:
+  1. 9개 세그먼트 중 1개(`10023947602400723454`)만 segmentation 데이터 보유
+  2. 해당 세그먼트도 199프레임 중 ~10프레임만 라벨 존재 (sparse annotation)
+  3. camera_segmentation은 1Hz (10프레임당 1프레임)
+  4. Worker postMessage로 Int32Array 전송 시 데이터 손실 의심 (라벨이 전부 -1)
+- **결정**: 전체 코드 제거. `semanticColors.ts`, `extractSegmentationLabels()`, `ColorMode` 타입, worker setSegmentation, CameraPanel segmentation overlay 등 모든 관련 코드 삭제.
+- **교훈**: Waymo v2.0의 segmentation annotation은 전체 데이터셋의 일부 subset에만 존재. 데이터 가용성을 먼저 확인한 후 기능을 구현해야 함.
+
+### D25. Spacebar Play/Pause + Auto-Rewind
+
+- **구현**: `App.tsx`에서 global `keydown` 이벤트 리스너. `Space` 키 → `togglePlayback()`.
+- **input 보호**: `e.target.tagName`이 INPUT/TEXTAREA/SELECT면 무시 (텍스트 입력 중 오동작 방지).
+- **Auto-rewind**: 마지막 프레임(currentFrameIndex >= totalFrames - 1)에서 play 시 자동으로 frame 0으로 이동 후 재생 시작.
+
+## 11. Progress Tracker
 
 1. ✅ Project scaffolding (Vite + React + TS + R3F)
 2. ✅ Waymo Dataset v2.0 download (sample segment)
 3. ✅ Parquet schema analysis
 4. ✅ Parquet loading infrastructure (hyparquet + merge + tests — 27 passing)
 5. ✅ Range image → xyz pure math (rangeImage.ts + 14 tests passing against real Waymo data)
-6. ✅ CPU Web Worker + WebGPU compute shader (lidarWorker.ts, rangeImageGpu.ts, GPU vs CPU 3 tests passing)
-7. ⬜ Phase 1 MVP implementation
-7. ⬜ Street Gaussians training
-8. ⬜ Deploy + LinkedIn post + Amy DM
+6. ✅ CPU Web Worker + WebGPU compute shader (dataWorker.ts, rangeImageGpu.ts)
+7. ✅ Phase 1 MVP: LiDAR point cloud + 3D bounding boxes (wireframe + GLB models) + timeline + worker pool
+8. ✅ Camera image panels: 5-camera strip with parallel camera worker loading + preloaded JPEG
+9. ✅ Camera frustum visualization + POV switching (orbital ↔ camera perspective)
+10. ✅ Hover highlight sync between camera panel and 3D frustums
+11. ✅ Multi-segment support: auto-discovery from waymo_data/ + dropdown selector
+12. ✅ Trajectory trails: past N frames of object positions as fading polylines
+13. ✅ Spacebar play/pause with auto-rewind at end
+14. ❌ Segmentation removed (sparse data: 1/9 segments, ~10/199 frames)
+15. ⬜ Street Gaussians training
+16. ⬜ Deploy + LinkedIn post

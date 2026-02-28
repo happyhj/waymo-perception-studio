@@ -15,7 +15,6 @@ import { CameraName } from '../../types/waymo'
 // Constants
 // ---------------------------------------------------------------------------
 
-const FRUSTUM_NEAR = 0.3
 const FRUSTUM_FAR = 6
 
 const CAMERA_COLORS: Record<number, string> = {
@@ -42,13 +41,12 @@ function CameraFrustum({
   const color = CAMERA_COLORS[calib.cameraName] ?? '#888888'
 
   const linePositions = useMemo(
-    () => buildFrustumLines(calib.hFov, calib.vFov, FRUSTUM_NEAR, FRUSTUM_FAR),
+    () => buildFrustumLines(calib.hFov, calib.vFov, FRUSTUM_FAR),
     [calib.hFov, calib.vFov],
   )
 
   // Highlight: hovered or active → full opacity, else dim
   const lineOpacity = hovered ? 1.0 : active ? 1.0 : 0.25
-  const boxOpacity = hovered ? 1.0 : active ? 1.0 : 0.3
   const lineColor = hovered ? '#ffffff' : color
 
   return (
@@ -73,12 +71,6 @@ function CameraFrustum({
           linewidth={1}
         />
       </lineSegments>
-
-      {/* Camera position marker */}
-      <mesh>
-        <boxGeometry args={[0.15, 0.10, 0.10]} />
-        <meshBasicMaterial color={color} transparent opacity={boxOpacity} />
-      </mesh>
     </group>
   )
 }

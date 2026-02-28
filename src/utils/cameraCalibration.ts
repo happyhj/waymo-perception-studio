@@ -125,23 +125,12 @@ export function parseCameraCalibrations(rows: ParquetRow[]): Map<number, CameraC
 export function buildFrustumLines(
   hFov: number,
   vFov: number,
-  near: number,
   far: number,
 ): Float32Array {
   const hHalf = Math.tan(hFov / 2)
   const vHalf = Math.tan(vFov / 2)
 
-  // Near plane corners (in camera frame: X=right, Y=down, Z=forward)
-  const nl = near * hHalf
-  const nt = near * vHalf
-  const n = [
-    [-nl, -nt, near],  // top-left
-    [nl, -nt, near],   // top-right
-    [nl, nt, near],    // bottom-right
-    [-nl, nt, near],   // bottom-left
-  ]
-
-  // Far plane corners
+  // Far plane corners (in camera frame: X=right, Y=down, Z=forward)
   const fl = far * hHalf
   const ft = far * vHalf
   const f = [
@@ -151,21 +140,17 @@ export function buildFrustumLines(
     [-fl, ft, far],
   ]
 
-  // Lines: 4 near edges + 4 far edges + 4 connecting lines
+  // Lines: 4 far edges + 4 origin→far corner (pyramid)
   const lines: number[] = []
   const addLine = (a: number[], b: number[]) => {
     lines.push(a[0], a[1], a[2], b[0], b[1], b[2])
   }
 
-  // Near rectangle
-  for (let i = 0; i < 4; i++) addLine(n[i], n[(i + 1) % 4])
   // Far rectangle
   for (let i = 0; i < 4; i++) addLine(f[i], f[(i + 1) % 4])
-  // Connecting edges (near corner → far corner)
-  for (let i = 0; i < 4; i++) addLine(n[i], f[i])
-  // Origin to near corners (pyramid lines from camera position)
+  // Origin to far corners (pyramid lines from camera position)
   const o = [0, 0, 0]
-  for (let i = 0; i < 4; i++) addLine(o, n[i])
+  for (let i = 0; i < 4; i++) addLine(o, f[i])
 
   return new Float32Array(lines)
 }
