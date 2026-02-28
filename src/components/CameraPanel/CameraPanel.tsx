@@ -4,7 +4,10 @@
  * Layout: SIDE_LEFT | FRONT_LEFT | FRONT | FRONT_RIGHT | SIDE_RIGHT
  * The FRONT camera is slightly larger (primary view).
  *
- * Each camera image has a POV button overlay that switches the 3D view
+ * Images are preloaded via new Image() before swapping src to prevent
+ * broken-image icons during fast timeline scrubbing.
+ *
+ * Each camera has a POV button overlay that switches the 3D view
  * to that camera's perspective.
  */
 
@@ -36,6 +39,7 @@ export default function CameraPanel() {
   const cameraImages = useSceneStore((s) => s.currentFrame?.cameraImages)
   const activeCam = useSceneStore((s) => s.activeCam)
   const toggleActiveCam = useSceneStore((s) => s.actions.toggleActiveCam)
+  const setHoveredCam = useSceneStore((s) => s.actions.setHoveredCam)
 
   return (
     <div style={{
@@ -56,6 +60,7 @@ export default function CameraPanel() {
           imageBuffer={cameraImages?.get(id) ?? null}
           active={activeCam === id}
           onTogglePov={toggleActiveCam}
+          onHover={setHoveredCam}
         />
       ))}
     </div>
@@ -72,34 +77,49 @@ interface CameraViewProps {
   imageBuffer: ArrayBuffer | null
   active: boolean
   onTogglePov: (cameraName: number) => void
+  onHover: (cameraName: number | null) => void
 }
 
-function CameraView({ cameraName, label, imageBuffer, active, onTogglePov }: CameraViewProps) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null)
-  const prevUrlRef = useRef<string | null>(null)
+function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHover }: CameraViewProps) {
+  /** The URL currently displayed (kept until a new image fully loads) */
+  const [displayUrl, setDisplayUrl] = useState<string | null>(null)
+  /** The newest blob URL being loaded (may not be visible yet) */
+  const pendingUrlRef = useRef<string | null>(null)
+  /** The blob URL currently shown on screen (for cleanup) */
+  const activeUrlRef = useRef<string | null>(null)
   const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
-    // Revoke previous URL
-    if (prevUrlRef.current) {
-      URL.revokeObjectURL(prevUrlRef.current)
-      prevUrlRef.current = null
-    }
+    if (!imageBuffer) return // keep showing the last good image
 
-    if (!imageBuffer) {
-      setObjectUrl(null)
-      return
-    }
-
-    // Create blob URL from JPEG ArrayBuffer
+    // Create blob URL for the new frame
     const blob = new Blob([imageBuffer], { type: 'image/jpeg' })
-    const url = URL.createObjectURL(blob)
-    prevUrlRef.current = url
-    setObjectUrl(url)
+    const newUrl = URL.createObjectURL(blob)
+    pendingUrlRef.current = newUrl
+
+    // Preload: only swap when the browser has the image decoded
+    const img = new Image()
+    img.onload = () => {
+      // Only apply if this is still the most recent request
+      if (pendingUrlRef.current !== newUrl) {
+        URL.revokeObjectURL(newUrl)
+        return
+      }
+      // Revoke the previously displayed URL
+      if (activeUrlRef.current) URL.revokeObjectURL(activeUrlRef.current)
+      activeUrlRef.current = newUrl
+      setDisplayUrl(newUrl)
+    }
+    img.onerror = () => {
+      // Corrupted frame — discard, keep previous image
+      URL.revokeObjectURL(newUrl)
+      if (pendingUrlRef.current === newUrl) pendingUrlRef.current = null
+    }
+    img.src = newUrl
 
     return () => {
-      URL.revokeObjectURL(url)
-      prevUrlRef.current = null
+      // If a newer effect fires before this image loaded, clean up
+      if (pendingUrlRef.current === newUrl) pendingUrlRef.current = null
     }
   }, [imageBuffer])
 
@@ -126,12 +146,12 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov }: Cam
         transition: 'border-color 0.15s',
       }}
       onClick={handleClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={() => { setHovered(true); onHover(cameraName) }}
+      onMouseLeave={() => { setHovered(false); onHover(null) }}
     >
-      {objectUrl ? (
+      {displayUrl ? (
         <img
-          src={objectUrl}
+          src={displayUrl}
           alt={label}
           style={{
             width: '100%',

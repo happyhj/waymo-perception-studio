@@ -2,12 +2,11 @@
  * CameraFrustums — renders 5 Waymo camera frustums in the 3D scene.
  *
  * Each frustum is a wireframe pyramid showing the camera's field of view.
- * POV switching is triggered from the CameraPanel overlay buttons (not here).
+ * Frustums highlight when the corresponding camera image is hovered.
  */
 
-import { useMemo, useRef } from 'react'
+import { useMemo } from 'react'
 import * as THREE from 'three'
-import { Html } from '@react-three/drei'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { parseCameraCalibrations, buildFrustumLines, type CameraCalib } from '../../utils/cameraCalibration'
 import { CameraName } from '../../types/waymo'
@@ -18,14 +17,6 @@ import { CameraName } from '../../types/waymo'
 
 const FRUSTUM_NEAR = 0.3
 const FRUSTUM_FAR = 6
-
-const CAMERA_LABELS: Record<number, string> = {
-  [CameraName.FRONT]: 'F',
-  [CameraName.FRONT_LEFT]: 'FL',
-  [CameraName.FRONT_RIGHT]: 'FR',
-  [CameraName.SIDE_LEFT]: 'SL',
-  [CameraName.SIDE_RIGHT]: 'SR',
-}
 
 const CAMERA_COLORS: Record<number, string> = {
   [CameraName.FRONT]: '#ffffff',
@@ -42,22 +33,26 @@ const CAMERA_COLORS: Record<number, string> = {
 function CameraFrustum({
   calib,
   active,
+  hovered,
 }: {
   calib: CameraCalib
   active: boolean
+  hovered: boolean
 }) {
-  const groupRef = useRef<THREE.Group>(null)
   const color = CAMERA_COLORS[calib.cameraName] ?? '#888888'
-  const label = CAMERA_LABELS[calib.cameraName] ?? '?'
 
   const linePositions = useMemo(
     () => buildFrustumLines(calib.hFov, calib.vFov, FRUSTUM_NEAR, FRUSTUM_FAR),
     [calib.hFov, calib.vFov],
   )
 
+  // Highlight: hovered or active → full opacity, else dim
+  const lineOpacity = hovered ? 1.0 : active ? 1.0 : 0.25
+  const boxOpacity = hovered ? 1.0 : active ? 1.0 : 0.3
+  const lineColor = hovered ? '#ffffff' : color
+
   return (
     <group
-      ref={groupRef}
       position={calib.position}
       quaternion={calib.quaternion}
     >
@@ -72,9 +67,9 @@ function CameraFrustum({
           />
         </bufferGeometry>
         <lineBasicMaterial
-          color={color}
+          color={lineColor}
           transparent
-          opacity={active ? 1.0 : 0.5}
+          opacity={lineOpacity}
           linewidth={1}
         />
       </lineSegments>
@@ -82,27 +77,8 @@ function CameraFrustum({
       {/* Camera position marker */}
       <mesh>
         <boxGeometry args={[0.15, 0.10, 0.10]} />
-        <meshBasicMaterial color={color} transparent opacity={active ? 1.0 : 0.6} />
+        <meshBasicMaterial color={color} transparent opacity={boxOpacity} />
       </mesh>
-
-      {/* Label */}
-      <Html
-        position={[0, -0.3, 0]}
-        center
-        style={{
-          color,
-          fontSize: '11px',
-          fontWeight: 700,
-          fontFamily: 'monospace',
-          textShadow: '0 0 4px rgba(0,0,0,0.8)',
-          pointerEvents: 'none',
-          userSelect: 'none',
-          whiteSpace: 'nowrap',
-          opacity: active ? 1 : 0.7,
-        }}
-      >
-        {label}
-      </Html>
     </group>
   )
 }
@@ -117,6 +93,7 @@ export default function CameraFrustums({
   activeCam: number | null
 }) {
   const cameraCalibrations = useSceneStore((s) => s.cameraCalibrations)
+  const hoveredCam = useSceneStore((s) => s.hoveredCam)
 
   const calibMap = useMemo(
     () => parseCameraCalibrations(cameraCalibrations),
@@ -132,6 +109,7 @@ export default function CameraFrustums({
           key={calib.cameraName}
           calib={calib}
           active={activeCam === calib.cameraName}
+          hovered={hoveredCam === calib.cameraName}
         />
       ))}
     </group>

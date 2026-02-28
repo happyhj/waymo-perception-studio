@@ -73,6 +73,7 @@ interface SceneActions {
   setTrailLength: (len: number) => void
   setActiveCam: (cam: number | null) => void
   toggleActiveCam: (cam: number) => void
+  setHoveredCam: (cam: number | null) => void
   setAvailableSegments: (segments: string[]) => void
   selectSegment: (segmentId: string) => Promise<void>
   reset: () => void
@@ -117,6 +118,8 @@ export interface SceneState {
   trailLength: number
   /** Active camera for POV mode (null = orbital view) */
   activeCam: number | null
+  /** Camera being hovered in CameraPanel (for frustum highlight) */
+  hoveredCam: number | null
   /** All discovered segment IDs */
   availableSegments: string[]
   /** Currently loaded segment ID */
@@ -299,6 +302,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   boxMode: 'box' as BoxMode,
   trailLength: 20,
   activeCam: null,
+  hoveredCam: null,
   availableSegments: [],
   currentSegment: null,
 
@@ -481,6 +485,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     toggleActiveCam: (cam: number) => {
       set((s) => ({ activeCam: s.activeCam === cam ? null : cam }))
     },
+    setHoveredCam: (cam: number | null) => {
+      set({ hoveredCam: cam })
+    },
 
     setAvailableSegments: (segments: string[]) => {
       set({ availableSegments: segments })
@@ -526,6 +533,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         boxMode: 'box' as BoxMode,
         trailLength: 20,
         activeCam: null,
+        hoveredCam: null,
       })
     },
   },
