@@ -8,7 +8,7 @@ Visit **[heejaekim.github.io/waymo-perception-studio](https://heejaekim.github.i
 
 To explore the Sensor View, download a sample segment (see below) and drag & drop the `waymo_data/` folder into the app.
 
-## Download Sample Segment
+## Download Sample Segments
 
 You need access to the [Waymo Open Dataset](https://waymo.com/open/) (free, requires Google account and license agreement).
 
@@ -16,21 +16,36 @@ You need access to the [Waymo Open Dataset](https://waymo.com/open/) (free, requ
 # Authenticate with Google Cloud
 gcloud auth login
 
-# Pick a sample segment (replace with your preferred segment ID)
-SEGMENT="10023947602400723454_1120_000_1140_000"
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
 
-# Create local data directory (mirrors Waymo's folder structure)
-mkdir -p waymo_data/{lidar,lidar_box,lidar_calibration,lidar_pose,lidar_segmentation,lidar_hkp,lidar_camera_projection,lidar_camera_synced_box,camera_image,camera_box,camera_calibration,camera_segmentation,camera_hkp,camera_to_lidar_box_association,projected_lidar_box,vehicle_pose,stats}
+# Essential components (the 6 used by the viewer)
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
 
-# Download all components for this segment
-for COMPONENT in \
+# Create local data directories
+for COMP in $COMPONENTS; do mkdir -p waymo_data/$COMP; done
+
+# Discover first 10 segments from the bucket and download
+SEGMENTS=$(gsutil ls $BUCKET/vehicle_pose/ | head -10 | xargs -I{} basename {} .parquet)
+
+for SEGMENT in $SEGMENTS; do
+  echo "Downloading segment: $SEGMENT"
+  for COMP in $COMPONENTS; do
+    gsutil -m cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/" 2>/dev/null
+  done
+done
+```
+
+To download a specific segment or all 17 components, use the manual approach:
+
+```bash
+SEGMENT="10023947602400723454_1120_000_1140_000"
+for COMP in \
   lidar lidar_box lidar_calibration lidar_pose lidar_segmentation lidar_hkp \
   lidar_camera_projection lidar_camera_synced_box \
   camera_image camera_box camera_calibration camera_segmentation camera_hkp \
   camera_to_lidar_box_association projected_lidar_box \
   vehicle_pose stats; do
-  gsutil -m cp $BUCKET/$COMPONENT/$SEGMENT.parquet waymo_data/$COMPONENT/
+  gsutil -m cp $BUCKET/$COMP/$SEGMENT.parquet waymo_data/$COMP/
 done
 ```
 
@@ -39,17 +54,20 @@ This preserves Waymo's original folder structure:
 ```
 waymo_data/
 ├── lidar/
-│   └── 10023947602400723454_1120_000_1140_000.parquet
-├── lidar_box/
-│   └── 10023947602400723454_1120_000_1140_000.parquet
+│   ├── {segment_a}.parquet
+│   └── {segment_b}.parquet
 ├── camera_image/
-│   └── 10023947602400723454_1120_000_1140_000.parquet
+│   ├── {segment_a}.parquet
+│   └── {segment_b}.parquet
 ├── vehicle_pose/
-│   └── 10023947602400723454_1120_000_1140_000.parquet
+│   ├── {segment_a}.parquet
+│   └── {segment_b}.parquet
 └── ...
 ```
 
-> **Note:** Some components may not exist for every segment. `gsutil` will skip missing files with a warning — that's fine.
+> **Disk space:** Each segment is ~500MB (6 essential components). 10 segments ≈ 5GB.
+>
+> **Multiple segments:** When multiple segments are present, a dropdown selector appears in the header to switch between them.
 
 ## For Developers
 

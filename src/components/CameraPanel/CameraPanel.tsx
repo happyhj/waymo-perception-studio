@@ -1,14 +1,14 @@
 /**
  * CameraPanel — displays all 5 Waymo camera images in a horizontal strip.
  *
- * Layout: FRONT_LEFT | FRONT | FRONT_RIGHT | SIDE_LEFT | SIDE_RIGHT
+ * Layout: SIDE_LEFT | FRONT_LEFT | FRONT | FRONT_RIGHT | SIDE_RIGHT
  * The FRONT camera is slightly larger (primary view).
  *
- * Images come as JPEG ArrayBuffers from the camera worker.
- * We create object URLs for efficient rendering and revoke them on cleanup.
+ * Each camera image has a POV button overlay that switches the 3D view
+ * to that camera's perspective.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { CameraName } from '../../types/waymo'
 
@@ -24,8 +24,18 @@ const CAMERA_ORDER: { id: number; label: string }[] = [
 /** Height of the camera strip in pixels */
 const STRIP_HEIGHT = 160
 
+const CAMERA_COLORS: Record<number, string> = {
+  [CameraName.FRONT]: '#ffffff',
+  [CameraName.FRONT_LEFT]: '#4ade80',
+  [CameraName.FRONT_RIGHT]: '#60a5fa',
+  [CameraName.SIDE_LEFT]: '#fb923c',
+  [CameraName.SIDE_RIGHT]: '#c084fc',
+}
+
 export default function CameraPanel() {
   const cameraImages = useSceneStore((s) => s.currentFrame?.cameraImages)
+  const activeCam = useSceneStore((s) => s.activeCam)
+  const toggleActiveCam = useSceneStore((s) => s.actions.toggleActiveCam)
 
   return (
     <div style={{
@@ -44,6 +54,8 @@ export default function CameraPanel() {
           cameraName={id}
           label={label}
           imageBuffer={cameraImages?.get(id) ?? null}
+          active={activeCam === id}
+          onTogglePov={toggleActiveCam}
         />
       ))}
     </div>
@@ -58,11 +70,14 @@ interface CameraViewProps {
   cameraName: number
   label: string
   imageBuffer: ArrayBuffer | null
+  active: boolean
+  onTogglePov: (cameraName: number) => void
 }
 
-function CameraView({ cameraName, label, imageBuffer }: CameraViewProps) {
+function CameraView({ cameraName, label, imageBuffer, active, onTogglePov }: CameraViewProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
   const prevUrlRef = useRef<string | null>(null)
+  const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
     // Revoke previous URL
@@ -88,19 +103,32 @@ function CameraView({ cameraName, label, imageBuffer }: CameraViewProps) {
     }
   }, [imageBuffer])
 
+  const handleClick = useCallback(() => {
+    onTogglePov(cameraName)
+  }, [onTogglePov, cameraName])
+
   // FRONT camera gets slightly more space
   const isFront = cameraName === CameraName.FRONT
   const flex = isFront ? 1.3 : 1
+  const accentColor = CAMERA_COLORS[cameraName] ?? '#888'
 
   return (
-    <div style={{
-      flex,
-      position: 'relative',
-      backgroundColor: '#111827',
-      borderRadius: '4px',
-      overflow: 'hidden',
-      minWidth: 0,
-    }}>
+    <div
+      style={{
+        flex,
+        position: 'relative',
+        backgroundColor: '#111827',
+        borderRadius: '4px',
+        overflow: 'hidden',
+        minWidth: 0,
+        cursor: 'pointer',
+        border: active ? `2px solid ${accentColor}` : '2px solid transparent',
+        transition: 'border-color 0.15s',
+      }}
+      onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {objectUrl ? (
         <img
           src={objectUrl}
@@ -126,6 +154,32 @@ function CameraView({ cameraName, label, imageBuffer }: CameraViewProps) {
         </div>
       )}
 
+      {/* POV indicator / hover overlay */}
+      {(hovered || active) && (
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: active ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.35)',
+          transition: 'background-color 0.15s',
+        }}>
+          <span style={{
+            fontSize: '11px',
+            fontFamily: 'monospace',
+            fontWeight: 700,
+            color: active ? accentColor : '#fff',
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            padding: '3px 10px',
+            borderRadius: '3px',
+            letterSpacing: '0.5px',
+          }}>
+            {active ? 'EXIT POV' : 'POV'}
+          </span>
+        </div>
+      )}
+
       {/* Label overlay */}
       <div style={{
         position: 'absolute',
@@ -141,6 +195,20 @@ function CameraView({ cameraName, label, imageBuffer }: CameraViewProps) {
       }}>
         {label}
       </div>
+
+      {/* Active dot indicator */}
+      {active && (
+        <div style={{
+          position: 'absolute',
+          top: 6,
+          right: 6,
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          backgroundColor: accentColor,
+          boxShadow: `0 0 6px ${accentColor}`,
+        }} />
+      )}
     </div>
   )
 }

@@ -5,34 +5,31 @@ import CameraPanel from './components/CameraPanel/CameraPanel'
 
 
 // ---------------------------------------------------------------------------
-// Dev auto-load: known segment served by Vite plugin (serveWaymoData)
+// Segment discovery: fetch available segments from Vite API, auto-load if 1
 // ---------------------------------------------------------------------------
 
-const DEV_SEGMENT = '10023947602400723454_1120_000_1140_000'
-const DEV_COMPONENTS = [
-  'vehicle_pose',
-  'lidar_calibration',
-  'camera_calibration',
-  'lidar_box',
-  'lidar',
-  'camera_image',
-]
-
-function useDevAutoLoad() {
+function useSegmentDiscovery() {
   const status = useSceneStore((s) => s.status)
-  const loadDataset = useSceneStore((s) => s.actions.loadDataset)
+  const availableSegments = useSceneStore((s) => s.availableSegments)
+  const actions = useSceneStore((s) => s.actions)
 
   useEffect(() => {
-    if (status !== 'idle') return
     if (!import.meta.env.DEV) return
+    if (availableSegments.length > 0) return // already discovered
 
-    // Build URL map for each component
-    const sources = new Map<string, string>()
-    for (const comp of DEV_COMPONENTS) {
-      sources.set(comp, `/waymo_data/${comp}/${DEV_SEGMENT}.parquet`)
-    }
-    loadDataset(sources as Map<string, File | string>)
-  }, [status, loadDataset])
+    fetch('/api/segments')
+      .then((r) => r.json())
+      .then(({ segments }: { segments: string[] }) => {
+        if (segments.length === 0) return
+        actions.setAvailableSegments(segments)
+
+        // Auto-load if only 1 segment available
+        if (segments.length === 1) {
+          actions.selectSegment(segments[0])
+        }
+      })
+      .catch(() => {})
+  }, [availableSegments.length, actions])
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +37,7 @@ function useDevAutoLoad() {
 // ---------------------------------------------------------------------------
 
 function App() {
-  useDevAutoLoad()
+  useSegmentDiscovery()
 
   return (
     <div style={{
@@ -85,10 +82,13 @@ function Header() {
   const cachedFrames = useSceneStore((s) => s.cachedFrames)
   const cameraLoadedCount = useSceneStore((s) => s.cameraLoadedCount)
   const cameraTotalCount = useSceneStore((s) => s.cameraTotalCount)
+  const availableSegments = useSceneStore((s) => s.availableSegments)
+  const currentSegment = useSceneStore((s) => s.currentSegment)
+  const actions = useSceneStore((s) => s.actions)
 
   let statusText: string
   if (status === 'idle') {
-    statusText = 'No segment loaded'
+    statusText = availableSegments.length > 1 ? 'Select a segment' : 'No segment loaded'
   } else if (status === 'loading') {
     statusText = `Loading… ${Math.round(loadProgress * 100)}%`
   } else if (status === 'error') {
@@ -116,11 +116,43 @@ function Header() {
       backgroundColor: '#16213e',
       borderBottom: '1px solid #0f3460',
       flexShrink: 0,
+      gap: '12px',
     }}>
-      <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
+      <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 600, whiteSpace: 'nowrap' }}>
         Waymo Perception Studio
       </h1>
-      <div style={{ fontSize: '12px', opacity: 0.6 }}>
+
+      {/* Segment selector — only shown when multiple segments available */}
+      {availableSegments.length > 1 && (
+        <select
+          value={currentSegment ?? ''}
+          onChange={(e) => {
+            if (e.target.value) actions.selectSegment(e.target.value)
+          }}
+          disabled={status === 'loading'}
+          style={{
+            flex: '0 1 auto',
+            minWidth: 0,
+            maxWidth: '360px',
+            padding: '4px 8px',
+            fontSize: '12px',
+            fontFamily: 'monospace',
+            backgroundColor: '#0f3460',
+            color: '#e0e0e0',
+            border: '1px solid #1a4a8a',
+            borderRadius: '4px',
+            cursor: status === 'loading' ? 'not-allowed' : 'pointer',
+            opacity: status === 'loading' ? 0.5 : 1,
+          }}
+        >
+          <option value="">-- select segment --</option>
+          {availableSegments.map((seg) => (
+            <option key={seg} value={seg}>{seg}</option>
+          ))}
+        </select>
+      )}
+
+      <div style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
         {statusText}
       </div>
     </header>

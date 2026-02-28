@@ -71,6 +71,10 @@ interface SceneActions {
   toggleSensor: (laserName: number) => void
   cycleBoxMode: () => void
   setTrailLength: (len: number) => void
+  setActiveCam: (cam: number | null) => void
+  toggleActiveCam: (cam: number) => void
+  setAvailableSegments: (segments: string[]) => void
+  selectSegment: (segmentId: string) => Promise<void>
   reset: () => void
 }
 
@@ -111,6 +115,12 @@ export interface SceneState {
   boxMode: BoxMode
   /** Number of past frames to show in trajectory trail (0 = off) */
   trailLength: number
+  /** Active camera for POV mode (null = orbital view) */
+  activeCam: number | null
+  /** All discovered segment IDs */
+  availableSegments: string[]
+  /** Currently loaded segment ID */
+  currentSegment: string | null
   // Actions
   actions: SceneActions
 }
@@ -288,6 +298,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   visibleSensors: new Set([1, 2, 3, 4, 5]),
   boxMode: 'box' as BoxMode,
   trailLength: 20,
+  activeCam: null,
+  availableSegments: [],
+  currentSegment: null,
 
   actions: {
     loadDataset: async (sources) => {
@@ -462,6 +475,32 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     setTrailLength: (len: number) => {
       set({ trailLength: Math.max(0, Math.min(199, len)) })
     },
+    setActiveCam: (cam: number | null) => {
+      set({ activeCam: cam })
+    },
+    toggleActiveCam: (cam: number) => {
+      set((s) => ({ activeCam: s.activeCam === cam ? null : cam }))
+    },
+
+    setAvailableSegments: (segments: string[]) => {
+      set({ availableSegments: segments })
+    },
+
+    selectSegment: async (segmentId: string) => {
+      const { actions } = get()
+      actions.reset()
+      set({ currentSegment: segmentId })
+
+      const components = [
+        'vehicle_pose', 'lidar_calibration', 'camera_calibration',
+        'lidar_box', 'lidar', 'camera_image',
+      ]
+      const sources = new Map<string, string>()
+      for (const comp of components) {
+        sources.set(comp, `/waymo_data/${comp}/${segmentId}.parquet`)
+      }
+      await actions.loadDataset(sources as Map<string, File | string>)
+    },
 
     reset: () => {
       get().actions.pause()
@@ -486,6 +525,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         visibleSensors: new Set([1, 2, 3, 4, 5]),
         boxMode: 'box' as BoxMode,
         trailLength: 20,
+        activeCam: null,
       })
     },
   },
