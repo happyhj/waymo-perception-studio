@@ -376,12 +376,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 4. Load first row group: LiDAR + Camera in parallel
+        // 4. Load first 2 row groups: LiDAR + Camera in parallel
+        //    Loading 2 RGs prevents a stall at the RG boundary when autoplay starts.
         set({ loadStep: 'first-frame' as LoadStep })
         const rgT0 = performance.now()
         const firstFramePromises: Promise<void>[] = []
         if (internal.workerPool?.isReady()) {
           firstFramePromises.push(loadAndCacheRowGroup(0, set))
+          if (internal.numRowGroups > 1) {
+            firstFramePromises.push(loadAndCacheRowGroup(1, set))
+          }
         } else {
           const lidarPf = internal.parquetFiles.get('lidar')
           if (lidarPf) {
@@ -395,6 +399,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
         if (internal.cameraPool?.isReady()) {
           firstFramePromises.push(loadAndCacheCameraRowGroup(0, set))
+          if (internal.cameraNumRowGroups > 1) {
+            firstFramePromises.push(loadAndCacheCameraRowGroup(1, set))
+          }
         }
         await Promise.all(firstFramePromises)
         const rgMs = performance.now() - rgT0

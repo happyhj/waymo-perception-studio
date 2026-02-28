@@ -1,150 +1,107 @@
-# Perception Studio for Waymo Open Dataset
+# Perception Studio
 
-A browser-based 3D visualization tool for [Waymo Open Dataset v2.0](https://waymo.com/open/data/perception/). No server required — explore LiDAR point clouds, camera feeds, 3D bounding boxes, and photorealistic 3DGS Bird's Eye View directly in the browser.
+In-browser perception explorer for [Waymo Open Dataset](https://waymo.com/open/) v2.0.1.
+No setup, no server — just drop Parquet files and explore.
 
-## Try the Live Demo
+**[Live Demo → heejaekim.github.io/waymo-perception-studio](https://heejaekim.github.io/waymo-perception-studio)**
 
-Visit **[heejaekim.github.io/waymo-perception-studio](https://heejaekim.github.io/waymo-perception-studio)** — the 3DGS Lab tab works instantly with no data download needed.
+## Features
 
-To explore the Sensor View, download a sample segment (see below) and drag & drop the `waymo_data/` folder into the app.
+- **LiDAR point cloud** — 5 sensors, ~168K pts/frame, turbo colormap, per-sensor toggle
+- **3D bounding boxes** — wireframe or GLB models (car/pedestrian/cyclist), tracking-ID colors
+- **Trajectory trails** — past N frames of object motion as fading polylines
+- **5 camera views** — synchronized JPEG panels with POV switching
+- **Camera frustums** — FOV visualization in 3D view with hover sync
+- **Timeline** — scrubber, play/pause, speed control (0.5×–4×), buffer bar
+- **Multi-segment** — dropdown selector with metadata (location, time, weather)
+- **Drag & drop** — drop a folder of Parquet files, no server needed
+- **Keyboard shortcuts** — `← →` frame, `J L` ±10, `Space` play/pause, `Shift+← →` segment, `?` help
 
 ## Download Data
 
-The viewer works with [Waymo Open Dataset v2.0](https://waymo.com/open/) Parquet files. Access is free — you just need a Google account and to accept the license agreement.
+You need [Waymo Open Dataset v2.0.1](https://waymo.com/open/) Parquet files. Access is free with a Google account.
 
 ### Prerequisites
 
 ```bash
-# Install Google Cloud CLI (if you don't have it)
-# https://cloud.google.com/sdk/docs/install
-
-# Sign in to your Google account
+# Install Google Cloud CLI: https://cloud.google.com/sdk/docs/install
 gcloud auth login
 ```
 
-### Option A: Download a single segment (~500MB)
-
-A single segment is a 20-second driving clip. This is the quickest way to try the viewer.
+### Quick start — download 1 segment (~500 MB)
 
 ```bash
-# Training (~798 segments) or validation (~202 segments)
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
-
-# Pick any segment — this is one example
 SEGMENT="10203656353524179475_7625_000_7645_000"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
 
-# These 6 components are what the viewer uses
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image stats"
-
-# Download
-for COMP in $COMPONENTS; do
-  mkdir -p waymo_data/$COMP
-  gsutil cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/"
+for C in $COMPONENTS; do
+  mkdir -p waymo_data/$C
+  gsutil cp "$BUCKET/$C/$SEGMENT.parquet" "waymo_data/$C/"
 done
 ```
 
-### Option B: Download multiple segments
+### Download multiple segments
 
 ```bash
-# Change to ".../validation" for the validation split
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image stats"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
+N=3
 
-# How many segments to download
-# Training: ~798 segments, Validation: ~202 segments (~1,000 total)
-# Change N to download more, or remove "| head -$N" below to download all
-N=5
+SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" | head -$N | xargs -I{} basename {} .parquet)
 
-# List available segments and download the first N
-SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" 2>/dev/null | head -$N | xargs -I{} basename {} .parquet)
-
-for SEGMENT in $SEGMENTS; do
-  echo "Downloading segment: $SEGMENT"
-  for COMP in $COMPONENTS; do
-    mkdir -p waymo_data/$COMP
-    gsutil -m cp "$BUCKET/$COMP/$SEGMENT.parquet" "waymo_data/$COMP/" 2>/dev/null
+for SEG in $SEGMENTS; do
+  echo "Downloading $SEG"
+  for C in $COMPONENTS; do
+    mkdir -p waymo_data/$C
+    gsutil -m cp "$BUCKET/$C/$SEG.parquet" "waymo_data/$C/"
   done
 done
 ```
 
 ### Expected folder structure
 
-After downloading, your folder should look like this. Drag & drop the entire `waymo_data/` folder into the viewer.
-
 ```
 waymo_data/
-├── vehicle_pose/
-│   └── {segment_id}.parquet
-├── lidar/
-│   └── {segment_id}.parquet
-├── lidar_box/
-│   └── {segment_id}.parquet
-├── lidar_calibration/
-│   └── {segment_id}.parquet
-├── camera_image/
-│   └── {segment_id}.parquet
-├── camera_calibration/
-│   └── {segment_id}.parquet
-└── stats/
-    └── {segment_id}.parquet
+├── vehicle_pose/         ← ego vehicle world transform
+├── lidar/                ← range images from 5 LiDAR sensors
+├── lidar_box/            ← 3D bounding boxes with tracking IDs
+├── lidar_calibration/    ← LiDAR extrinsic transforms
+├── camera_image/         ← JPEGs from 5 cameras
+└── camera_calibration/   ← camera intrinsic/extrinsic
 ```
 
-> **Disk space:** Each segment ≈ 500MB across the 7 components. 5 segments ≈ 2.5GB, full training set ≈ 400GB.
->
-> **Multiple segments:** When multiple segments are present, a dropdown appears to switch between them.
->
-> **Test set:** The test split has no `lidar_box` labels — the viewer still works but the Perception panel (bounding boxes, trails) will be hidden.
+Each segment is a **20-second driving clip** at **10 Hz** (~200 frames). A single segment is ~500 MB across 6 components.
+
+Drag & drop the `waymo_data/` folder into the app. Multiple segments are auto-detected with a dropdown selector.
 
 ## For Developers
 
 ```bash
 git clone https://github.com/heejaekim/waymo-perception-studio.git
 cd waymo-perception-studio
-pnpm install
-
-# Point the app to your data folder
-echo "VITE_WAYMO_DATA_PATH=./waymo_data" > .env
-
-# Start dev server — data auto-loads on startup
-pnpm run dev
+npm install
+npm run dev
 ```
 
-The app auto-detects segments and available components from the folder structure. If multiple segments are present, pick one from the list.
+Place `waymo_data/` in the project root — the dev server auto-discovers segments on startup.
 
-## Dataset Structure
-
-Each segment is an independent **20-second driving clip** at **10Hz** (~200 frames).
-
-| Component | Description | Use |
-|-----------|-------------|-----|
-| `lidar` | Range images from 5 LiDAR sensors (~200K points/frame) | **Point cloud rendering** |
-| `lidar_box` | 3D bounding boxes with heading, speed, type, `laser_object_id` | **Box visualization + tracking** |
-| `lidar_calibration` | Extrinsic transforms per LiDAR sensor | **Coordinate transforms** |
-| `camera_image` | Images from 5 cameras (FRONT, FL, FR, SL, SR) | **Camera panels** |
-| `camera_calibration` | Intrinsic/extrinsic per camera | **Frustum visualization** |
-| `vehicle_pose` | Ego vehicle world transform (4x4 matrix) | **Global coordinates** |
-| `lidar_pose` | Per-point ego-motion correction | Future: point cloud accuracy |
-| `lidar_camera_projection` | LiDAR-to-camera point mapping | Future: cross-modal overlay |
-| `camera_box` | 2D bounding boxes per camera | Future: image overlay |
-| `projected_lidar_box` | 3D boxes projected onto camera images | Future: image overlay |
-| `lidar_segmentation` | Semantic segmentation per LiDAR point | Sparse coverage, not used |
-| `camera_segmentation` | Semantic segmentation masks (1Hz) | Sparse coverage, not used |
-| `lidar_hkp` | Human keypoints from LiDAR | Future: pedestrian pose |
-| `camera_hkp` | Human keypoints from camera | Future: pedestrian pose |
-| `lidar_camera_synced_box` | Synced boxes across LiDAR & camera | Future |
-| `camera_to_lidar_box_association` | Links camera boxes to LiDAR boxes | Future |
-| `stats` | Time of day, location, weather, object counts | Future: metadata display |
+```bash
+npm run build   # type-check + production build
+npm run lint    # ESLint
+npm test        # Vitest
+```
 
 ## Tech Stack
 
-- **Frontend**: React 19 + Vite 7 + TypeScript 5.9
+- **UI**: React 19 + Vite 7 + TypeScript 5.9
 - **3D**: @react-three/fiber + drei
-- **3DGS**: gsplat.js
-- **Data**: hyparquet + hyparquet-compressors (browser-native Parquet reading with BROTLI support)
+- **Data**: hyparquet + hyparquet-compressors (browser-native Parquet with BROTLI)
+- **Workers**: 3 LiDAR + 2 camera workers for parallel row group decompression
 
 ## Browser Support
 
-Chrome and Edge recommended (folder drag & drop and File System Access API). Firefox and Safari supported via individual file drag & drop.
+Chrome / Edge recommended (folder drag & drop via File System Access API). Firefox / Safari work with individual file drag & drop.
 
 ## License
 

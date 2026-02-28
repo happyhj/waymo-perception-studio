@@ -153,11 +153,6 @@ function App() {
 function Header() {
   const status = useSceneStore((s) => s.status)
   const storeError = useSceneStore((s) => s.error)
-  const totalFrames = useSceneStore((s) => s.totalFrames)
-  const loadProgress = useSceneStore((s) => s.loadProgress)
-  const cachedFrames = useSceneStore((s) => s.cachedFrames)
-  const cameraLoadedCount = useSceneStore((s) => s.cameraLoadedCount)
-  const cameraTotalCount = useSceneStore((s) => s.cameraTotalCount)
   const availableSegments = useSceneStore((s) => s.availableSegments)
   const currentSegment = useSceneStore((s) => s.currentSegment)
   const segmentMetas = useSceneStore((s) => s.segmentMetas)
@@ -167,21 +162,11 @@ function Header() {
   if (status === 'idle') {
     statusText = availableSegments.length > 1 ? 'Select a segment' : 'No segment loaded'
   } else if (status === 'loading') {
-    statusText = `Loading… ${Math.round(loadProgress * 100)}%`
+    statusText = ''
   } else if (status === 'error') {
     statusText = `Error: ${storeError ?? 'Unknown'}`
   } else {
-    // status === 'ready' — show prefetch progress
-    const lidarDone = cachedFrames.length >= totalFrames
-    const cameraDone = cameraTotalCount > 0 && cameraLoadedCount >= cameraTotalCount
-    if (lidarDone && cameraDone) {
-      statusText = `${totalFrames} frames`
-    } else {
-      const parts: string[] = []
-      if (!lidarDone) parts.push(`LiDAR ${cachedFrames.length}/${totalFrames}`)
-      if (!cameraDone && cameraTotalCount > 0) parts.push(`Camera ${cameraLoadedCount}/${cameraTotalCount}`)
-      statusText = `Caching… ${parts.join(' · ')}`
-    }
+    statusText = ''
   }
 
   return (
@@ -267,9 +252,10 @@ function Header() {
           <option value="">-- select segment --</option>
           {availableSegments.map((seg, i) => {
             const meta = segmentMetas.get(seg)
+            const shortId = seg.slice(0, 16)
             const label = meta
-              ? `#${i + 1} · ${LOCATION_LABELS[meta.location] ?? meta.location} · ${meta.timeOfDay} · ${meta.weather}`
-              : `#${i + 1} · ${seg.slice(0, 20)}…`
+              ? `#${i + 1} · ${shortId}… · ${LOCATION_LABELS[meta.location] ?? meta.location} · ${meta.timeOfDay}`
+              : `#${i + 1} · ${shortId}…`
             return <option key={seg} value={seg}>{label}</option>
           })}
         </select>
@@ -320,6 +306,115 @@ function Header() {
         {statusText}
       </div>
     </header>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Download Guide — collapsible shell script
+// ---------------------------------------------------------------------------
+
+const DOWNLOAD_SCRIPT = `# Requires: Google Cloud SDK (gsutil)
+# https://cloud.google.com/sdk/docs/install
+
+BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
+N=3  # number of segments to download
+
+SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" | head -$N | xargs -I{} basename {} .parquet)
+
+for SEG in $SEGMENTS; do
+  echo "Downloading $SEG"
+  for C in $COMPONENTS; do
+    mkdir -p waymo_data/$C
+    gsutil -m cp "$BUCKET/$C/$SEG.parquet" "waymo_data/$C/"
+  done
+done`
+
+function DownloadGuide() {
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(DOWNLOAD_SCRIPT).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [])
+
+  return (
+    <div style={{ maxWidth: '520px', width: '100%' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+          width: '100%',
+          padding: '8px',
+          fontSize: '12px',
+          fontFamily: fonts.sans,
+          color: colors.textDim,
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = colors.textSecondary }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = colors.textDim }}
+      >
+        <span style={{
+          display: 'inline-block',
+          transition: 'transform 0.2s',
+          transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+          fontSize: '10px',
+        }}>▶</span>
+        Need data? Download script for Waymo Open Dataset v2.0.1
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'relative',
+          marginTop: '4px',
+          borderRadius: radius.md,
+          border: `1px solid ${colors.border}`,
+          backgroundColor: colors.bgDeep,
+          overflow: 'hidden',
+        }}>
+          <button
+            onClick={handleCopy}
+            style={{
+              position: 'absolute',
+              top: '6px',
+              right: '6px',
+              padding: '3px 8px',
+              fontSize: '10px',
+              fontFamily: fonts.mono,
+              color: copied ? colors.accent : colors.textDim,
+              backgroundColor: colors.bgOverlay,
+              border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm,
+              cursor: 'pointer',
+              zIndex: 1,
+            }}
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+          <pre style={{
+            margin: 0,
+            padding: '14px 16px',
+            fontSize: '11px',
+            fontFamily: fonts.mono,
+            color: colors.textSecondary,
+            lineHeight: 1.6,
+            overflowX: 'auto',
+            whiteSpace: 'pre',
+          }}>
+            {DOWNLOAD_SCRIPT}
+          </pre>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -407,6 +502,7 @@ function DropZone({ onFilesLoaded }: { onFilesLoaded: (segments: Map<string, Map
 
   return (
     <div
+      className="dropzone-scroll"
       onDrop={onDrop}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
@@ -419,10 +515,55 @@ function DropZone({ onFilesLoaded }: { onFilesLoaded: (segments: Map<string, Map
         justifyContent: 'center',
         gap: '24px',
         padding: '40px',
+        overflow: 'auto',
         transition: 'background-color 0.2s',
         backgroundColor: dragging ? 'rgba(0, 232, 157, 0.05)' : 'transparent',
       }}
     >
+      <style>{`
+        .dropzone-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+        .dropzone-scroll::-webkit-scrollbar-track { background: transparent; }
+        .dropzone-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        .dropzone-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+        .dropzone-scroll { scrollbar-color: rgba(255,255,255,0.15) transparent; scrollbar-width: thin; }
+      `}</style>
+      {/* Intro */}
+      <div style={{
+        maxWidth: '520px',
+        textAlign: 'center',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+      }}>
+        <div style={{
+          fontSize: '20px',
+          fontWeight: 700,
+          fontFamily: fonts.sans,
+          color: colors.textPrimary,
+        }}>
+          Perception Studio
+        </div>
+        <div style={{
+          fontSize: '13px',
+          fontFamily: fonts.sans,
+          color: colors.textSecondary,
+          lineHeight: 1.6,
+        }}>
+          In-browser perception explorer for{' '}
+          <a
+            href="https://waymo.com/open/"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: colors.accent, textDecoration: 'none' }}
+          >
+            Waymo Open Dataset
+          </a>{' '}
+          v2.0.1.
+          <br />
+          No setup, no server — just drop Parquet files and explore.
+        </div>
+      </div>
+
       {/* Drop area */}
       <div style={{
         width: '100%',
@@ -532,6 +673,9 @@ function DropZone({ onFilesLoaded }: { onFilesLoaded: (segments: Map<string, Map
           </>
         )}
       </div>
+
+      {/* Data download guide — collapsible */}
+      <DownloadGuide />
     </div>
   )
 }
@@ -861,40 +1005,26 @@ function Timeline() {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '13px' }}>
-      {cachedFrames.length === 0 ? (
-        <div style={{
+      <button
+        onClick={() => actions.togglePlayback()}
+        disabled={disabled || cachedFrames.length === 0}
+        style={{
           width: '28px',
           height: '28px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: '14px',
-          color: colors.textDim,
-        }}>
-          ⏳
-        </div>
-      ) : (
-        <button
-          onClick={() => actions.togglePlayback()}
-          disabled={disabled}
-          style={{
-            width: '28px',
-            height: '28px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'none',
-            border: 'none',
-            color: disabled ? colors.textDim : colors.textPrimary,
-            cursor: disabled ? 'default' : 'pointer',
-            fontSize: '16px',
-            borderRadius: radius.sm,
-            transition: 'color 0.15s',
-          }}
-        >
-          {isPlaying ? '⏸' : '▶'}
-        </button>
-      )}
+          background: 'none',
+          border: 'none',
+          color: (disabled || cachedFrames.length === 0) ? colors.textDim : colors.textPrimary,
+          cursor: (disabled || cachedFrames.length === 0) ? 'default' : 'pointer',
+          fontSize: '16px',
+          borderRadius: radius.sm,
+          transition: 'color 0.15s',
+        }}
+      >
+        {isPlaying ? '⏸' : '▶'}
+      </button>
 
       {/* Custom slider with buffer bar */}
       <div style={{ flex: 1, position: 'relative', height: '24px', display: 'flex', alignItems: 'center' }}>
@@ -954,7 +1084,6 @@ function Timeline() {
             transform: 'translate(-50%, -50%)',
             boxShadow: `0 0 6px ${colors.accentDim}`,
             pointerEvents: 'none',
-            transition: 'left 0.05s linear',
           }} />
         )}
 
