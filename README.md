@@ -34,7 +34,7 @@ BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
 SEGMENT="10203656353524179475_7625_000_7645_000"
 
 # These 6 components are what the viewer uses
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image stats"
 
 # Download
 for COMP in $COMPONENTS; do
@@ -48,7 +48,7 @@ done
 ```bash
 # Change to ".../validation" for the validation split
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image stats"
 
 # How many segments to download
 # Training: ~798 segments, Validation: ~202 segments (~1,000 total)
@@ -56,7 +56,7 @@ COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar ca
 N=5
 
 # List available segments and download the first N
-SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/" | head -$N | xargs -I{} basename {} .parquet)
+SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" 2>/dev/null | head -$N | xargs -I{} basename {} .parquet)
 
 for SEGMENT in $SEGMENTS; do
   echo "Downloading segment: $SEGMENT"
@@ -83,11 +83,13 @@ waymo_data/
 │   └── {segment_id}.parquet
 ├── camera_image/
 │   └── {segment_id}.parquet
-└── camera_calibration/
+├── camera_calibration/
+│   └── {segment_id}.parquet
+└── stats/
     └── {segment_id}.parquet
 ```
 
-> **Disk space:** Each segment ≈ 500MB across the 6 components. 5 segments ≈ 2.5GB, full training set ≈ 400GB.
+> **Disk space:** Each segment ≈ 500MB across the 7 components. 5 segments ≈ 2.5GB, full training set ≈ 400GB.
 >
 > **Multiple segments:** When multiple segments are present, a dropdown appears to switch between them.
 >

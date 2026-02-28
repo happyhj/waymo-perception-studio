@@ -104,6 +104,23 @@ export interface SegmentInfo {
   lidarCalibrations: LidarCalibration[]
 }
 
+/** Segment metadata from stats component */
+export interface SegmentMeta {
+  segmentId: string
+  timeOfDay: string   // "Day" | "Night" | "Dawn/Dusk"
+  location: string    // "location_sf" | "location_phx" | etc.
+  weather: string     // "sunny" | "rain" | etc.
+  /** Average object counts across frames: { type → count } */
+  objectCounts: Record<number, number>
+}
+
+/** Human-readable location labels */
+export const LOCATION_LABELS: Record<string, string> = {
+  'location_sf': 'San Francisco',
+  'location_phx': 'Phoenix',
+  'location_other': 'Other',
+}
+
 /** Application state for playback */
 export interface PlaybackState {
   currentFrame: number

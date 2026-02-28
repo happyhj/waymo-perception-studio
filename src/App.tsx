@@ -1,8 +1,10 @@
-import { useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSceneStore } from './stores/useSceneStore'
 import LidarViewer from './components/LidarViewer/LidarViewer'
 import CameraPanel from './components/CameraPanel/CameraPanel'
 import { colors, fonts, radius, gradients } from './theme'
+import { LOCATION_LABELS } from './types/waymo'
+import { scanDataTransfer, pickAndScanFolder, hasDirectoryPicker } from './utils/folderScan'
 
 
 // ---------------------------------------------------------------------------
@@ -39,13 +41,14 @@ function useSegmentDiscovery() {
 function App() {
   useSegmentDiscovery()
   const status = useSceneStore((s) => s.status)
+  const availableSegments = useSceneStore((s) => s.availableSegments)
   const togglePlayback = useSceneStore((s) => s.actions.togglePlayback)
+  const loadFromFiles = useSceneStore((s) => s.actions.loadFromFiles)
 
   // Global spacebar → play/pause toggle
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === 'Space' && status === 'ready') {
-        // Don't trigger if user is typing in an input/textarea
         const tag = (e.target as HTMLElement)?.tagName
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
         e.preventDefault()
@@ -55,6 +58,9 @@ function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [status, togglePlayback])
+
+  // Show drop zone when no data loaded (idle + no segments)
+  const showDropZone = status === 'idle' && availableSegments.length === 0
 
   return (
     <div style={{
@@ -71,19 +77,25 @@ function App() {
       <Header />
 
       {/* Main Content */}
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <SensorView />
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+        {showDropZone ? (
+          <DropZone onFilesLoaded={loadFromFiles} />
+        ) : (
+          <SensorView />
+        )}
       </main>
 
       {/* Timeline */}
-      <footer style={{
-        padding: '10px 20px',
-        background: colors.bgSurface,
-        borderTop: `1px solid ${colors.border}`,
-        flexShrink: 0,
-      }}>
-        <Timeline />
-      </footer>
+      {!showDropZone && (
+        <footer style={{
+          padding: '10px 20px',
+          background: colors.bgSurface,
+          borderTop: `1px solid ${colors.border}`,
+          flexShrink: 0,
+        }}>
+          <Timeline />
+        </footer>
+      )}
     </div>
   )
 }
@@ -94,6 +106,7 @@ function App() {
 
 function Header() {
   const status = useSceneStore((s) => s.status)
+  const storeError = useSceneStore((s) => s.error)
   const totalFrames = useSceneStore((s) => s.totalFrames)
   const loadProgress = useSceneStore((s) => s.loadProgress)
   const cachedFrames = useSceneStore((s) => s.cachedFrames)
@@ -101,6 +114,7 @@ function Header() {
   const cameraTotalCount = useSceneStore((s) => s.cameraTotalCount)
   const availableSegments = useSceneStore((s) => s.availableSegments)
   const currentSegment = useSceneStore((s) => s.currentSegment)
+  const segmentMetas = useSceneStore((s) => s.segmentMetas)
   const actions = useSceneStore((s) => s.actions)
 
   let statusText: string
@@ -109,7 +123,7 @@ function Header() {
   } else if (status === 'loading') {
     statusText = `Loading… ${Math.round(loadProgress * 100)}%`
   } else if (status === 'error') {
-    statusText = 'Error'
+    statusText = `Error: ${storeError ?? 'Unknown'}`
   } else {
     // status === 'ready' — show prefetch progress
     const lidarDone = cachedFrames.length >= totalFrames
@@ -150,12 +164,34 @@ function Header() {
 
       {/* Segment selector — only shown when multiple segments available */}
       {availableSegments.length > 1 && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <button
+          onClick={() => {
+            const idx = availableSegments.indexOf(currentSegment ?? '')
+            if (idx > 0) actions.selectSegment(availableSegments[idx - 1])
+          }}
+          disabled={status === 'loading' || !currentSegment || availableSegments.indexOf(currentSegment) <= 0}
+          style={{
+            padding: '4px 6px',
+            fontSize: '12px',
+            backgroundColor: 'transparent',
+            color: colors.textSecondary,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.sm,
+            cursor: status === 'loading' ? 'not-allowed' : 'pointer',
+            opacity: (!currentSegment || availableSegments.indexOf(currentSegment) <= 0) ? 0.3 : 1,
+            lineHeight: 1,
+          }}
+          title="Previous segment"
+        >&#9664;</button>
         <select
           value={currentSegment ?? ''}
           onChange={(e) => {
             if (e.target.value) actions.selectSegment(e.target.value)
           }}
           disabled={status === 'loading'}
+          title={currentSegment ?? ''}
           style={{
             flex: '0 1 auto',
             minWidth: 0,
@@ -183,10 +219,50 @@ function Header() {
           }}
         >
           <option value="">-- select segment --</option>
-          {availableSegments.map((seg) => (
-            <option key={seg} value={seg}>{seg}</option>
-          ))}
+          {availableSegments.map((seg, i) => {
+            const meta = segmentMetas.get(seg)
+            const label = meta
+              ? `#${i + 1} · ${LOCATION_LABELS[meta.location] ?? meta.location} · ${meta.timeOfDay} · ${meta.weather}`
+              : `#${i + 1} · ${seg.slice(0, 20)}…`
+            return <option key={seg} value={seg}>{label}</option>
+          })}
         </select>
+        <button
+          onClick={() => {
+            const idx = availableSegments.indexOf(currentSegment ?? '')
+            if (idx >= 0 && idx < availableSegments.length - 1) actions.selectSegment(availableSegments[idx + 1])
+          }}
+          disabled={status === 'loading' || !currentSegment || availableSegments.indexOf(currentSegment) >= availableSegments.length - 1}
+          style={{
+            padding: '4px 6px',
+            fontSize: '12px',
+            backgroundColor: 'transparent',
+            color: colors.textSecondary,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.sm,
+            cursor: status === 'loading' ? 'not-allowed' : 'pointer',
+            opacity: (!currentSegment || availableSegments.indexOf(currentSegment) >= availableSegments.length - 1) ? 0.3 : 1,
+            lineHeight: 1,
+          }}
+          title="Next segment"
+        >&#9654;</button>
+        </div>
+        {currentSegment && (
+          <div style={{
+            fontSize: '10px',
+            fontFamily: fonts.mono,
+            color: colors.textDim,
+            maxWidth: '360px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            cursor: 'default',
+            userSelect: 'all',
+          }} title={currentSegment}>
+            {currentSegment}
+          </div>
+        )}
+        </div>
       )}
 
       <div style={{
@@ -198,6 +274,219 @@ function Header() {
         {statusText}
       </div>
     </header>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Drop Zone — shown when no data is loaded
+// ---------------------------------------------------------------------------
+
+function DropZone({ onFilesLoaded }: { onFilesLoaded: (segments: Map<string, Map<string, File>>) => Promise<void> }) {
+  const [dragging, setDragging] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const dragCounter = useRef(0)
+
+  const handleFiles = useCallback(async (segments: Map<string, Map<string, File>>) => {
+    if (segments.size === 0) {
+      setError('No Waymo segments found. Make sure the folder contains vehicle_pose/*.parquet files.')
+      setScanning(false)
+      return
+    }
+    // Check that at least one segment has vehicle_pose (required)
+    const valid = [...segments.entries()].filter(([, m]) => m.has('vehicle_pose'))
+    if (valid.length === 0) {
+      setError('No valid segments found. Each segment needs at least a vehicle_pose parquet file.')
+      setScanning(false)
+      return
+    }
+    setError(null)
+    await onFilesLoaded(new Map(valid))
+  }, [onFilesLoaded])
+
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
+    dragCounter.current = 0
+    setScanning(true)
+    setError(null)
+    try {
+      const segments = await scanDataTransfer(e.dataTransfer.items)
+      await handleFiles(segments)
+    } catch (err) {
+      setError(`Failed to scan folder: ${err instanceof Error ? err.message : String(err)}`)
+      setScanning(false)
+    }
+  }, [handleFiles])
+
+  const onDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current++
+    setDragging(true)
+  }, [])
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current--
+    if (dragCounter.current <= 0) {
+      setDragging(false)
+      dragCounter.current = 0
+    }
+  }, [])
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const onPickFolder = useCallback(async () => {
+    setScanning(true)
+    setError(null)
+    try {
+      const segments = await pickAndScanFolder()
+      await handleFiles(segments)
+    } catch (err) {
+      // User cancelled picker — not an error
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setScanning(false)
+        return
+      }
+      setError(`Failed to scan folder: ${err instanceof Error ? err.message : String(err)}`)
+      setScanning(false)
+    }
+  }, [handleFiles])
+
+  return (
+    <div
+      onDrop={onDrop}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '24px',
+        padding: '40px',
+        transition: 'background-color 0.2s',
+        backgroundColor: dragging ? 'rgba(0, 232, 157, 0.05)' : 'transparent',
+      }}
+    >
+      {/* Drop area */}
+      <div style={{
+        width: '100%',
+        maxWidth: '520px',
+        padding: '48px 40px',
+        borderRadius: '16px',
+        border: `2px dashed ${dragging ? colors.accent : colors.border}`,
+        backgroundColor: dragging ? 'rgba(0, 232, 157, 0.08)' : colors.bgSurface,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '20px',
+        transition: 'all 0.2s',
+      }}>
+        {scanning ? (
+          <>
+            <div style={{
+              fontSize: '14px',
+              fontFamily: fonts.sans,
+              color: colors.textSecondary,
+            }}>
+              Scanning folder for segments…
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Icon */}
+            <div style={{ fontSize: '36px', opacity: 0.6 }}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={dragging ? colors.accent : colors.textDim} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                <line x1="12" y1="11" x2="12" y2="17" />
+                <polyline points="9 14 12 11 15 14" />
+              </svg>
+            </div>
+
+            <div style={{ textAlign: 'center' }}>
+              <div style={{
+                fontSize: '16px',
+                fontWeight: 600,
+                fontFamily: fonts.sans,
+                color: colors.textPrimary,
+                marginBottom: '8px',
+              }}>
+                Drop <span style={{ color: colors.accent, fontFamily: fonts.mono }}>waymo_data/</span> folder here
+              </div>
+              <div style={{
+                fontSize: '13px',
+                fontFamily: fonts.sans,
+                color: colors.textSecondary,
+                lineHeight: 1.5,
+              }}>
+                Or use the button below to select the folder
+              </div>
+            </div>
+
+            {/* Folder picker button */}
+            {hasDirectoryPicker() && (
+              <button
+                onClick={onPickFolder}
+                style={{
+                  padding: '10px 24px',
+                  fontSize: '13px',
+                  fontFamily: fonts.sans,
+                  fontWeight: 500,
+                  backgroundColor: 'transparent',
+                  color: colors.accent,
+                  border: `1px solid ${colors.accent}`,
+                  borderRadius: radius.md,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(0, 232, 157, 0.1)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent'
+                }}
+              >
+                Select Folder
+              </button>
+            )}
+
+            {error && (
+              <div style={{
+                fontSize: '12px',
+                fontFamily: fonts.sans,
+                color: '#FF6B6B',
+                textAlign: 'center',
+                padding: '8px 16px',
+                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                borderRadius: radius.sm,
+              }}>
+                {error}
+              </div>
+            )}
+
+            {/* Hint */}
+            <div style={{
+              fontSize: '11px',
+              fontFamily: fonts.mono,
+              color: colors.textDim,
+              textAlign: 'center',
+              lineHeight: 1.6,
+            }}>
+              Expected: waymo_data/{'{'} vehicle_pose, lidar, camera_image, … {'}'}/{'{'}segment_id{'}'}.parquet
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

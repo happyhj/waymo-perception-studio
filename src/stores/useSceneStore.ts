@@ -40,6 +40,7 @@ import type {
 } from '../workers/cameraWorker'
 import { WorkerPool } from '../workers/workerPool'
 import { CameraWorkerPool } from '../workers/cameraWorkerPool'
+import type { SegmentMeta } from '../types/waymo'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +78,7 @@ interface SceneActions {
   setHoveredCam: (cam: number | null) => void
   setAvailableSegments: (segments: string[]) => void
   selectSegment: (segmentId: string) => Promise<void>
+  loadFromFiles: (segments: Map<string, Map<string, File>>) => Promise<void>
   reset: () => void
 }
 
@@ -127,6 +129,8 @@ export interface SceneState {
   hoveredCam: number | null
   /** All discovered segment IDs */
   availableSegments: string[]
+  /** Segment metadata from stats component (segmentId → SegmentMeta) */
+  segmentMetas: Map<string, SegmentMeta>
   /** Currently loaded segment ID */
   currentSegment: string | null
   // Actions
@@ -172,6 +176,10 @@ const internal = {
   lidarFrameIndex: null as FrameRowIndex | null,
   /** Object trajectory index: objectId → sorted array of {frameIndex, x, y, z, type} */
   objectTrajectories: new Map<string, { frameIndex: number; x: number; y: number; z: number; type: number }[]>(),
+  /** File-based segments from drag & drop (segmentId → component → File) */
+  filesBySegment: null as Map<string, Map<string, File>> | null,
+  /** Blob URLs created for workers — revoke on reset to free memory */
+  blobUrls: [] as string[],
 }
 
 function resetInternal() {
@@ -201,6 +209,11 @@ function resetInternal() {
   internal.cameraNumRowGroups = 0
   internal.cameraLoadedRowGroups.clear()
   internal.cameraPrefetchStarted = false
+  // Revoke blob URLs to free memory
+  for (const url of internal.blobUrls) {
+    URL.revokeObjectURL(url)
+  }
+  internal.blobUrls = []
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +324,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   activeCam: null,
   hoveredCam: null,
   availableSegments: [],
+  segmentMetas: new Map(),
   currentSegment: null,
 
   actions: {
@@ -342,7 +356,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
 
         // 2. Load startup data (small files: poses, calibrations, boxes)
-        await loadStartupData(set)
+        await loadStartupData(set, get)
         completed++
         set({ loadProgress: completed / totalSteps })
 
@@ -401,6 +415,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           prefetchAllCameraRowGroups(set)
         }
       } catch (e) {
+        console.error('[loadDataset] Error:', e)
         set({
           status: 'error',
           error: e instanceof Error ? e.message : String(e),
@@ -528,15 +543,42 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       actions.reset()
       set({ currentSegment: segmentId, ...savedSettings })
 
+      // File-based path (drag & drop / folder picker)
+      if (internal.filesBySegment?.has(segmentId)) {
+        const fileMap = internal.filesBySegment.get(segmentId)!
+        const sources = new Map<string, File | string>()
+        for (const [component, file] of fileMap) {
+          // Convert File → blob URL so workers can fetch it
+          const blobUrl = URL.createObjectURL(file)
+          internal.blobUrls.push(blobUrl)
+          sources.set(component, blobUrl)
+        }
+        await actions.loadDataset(sources)
+        return
+      }
+
+      // URL-based path (Vite dev server)
       const components = [
         'vehicle_pose', 'lidar_calibration', 'camera_calibration',
-        'lidar_box', 'lidar', 'camera_image',
+        'lidar_box', 'lidar', 'camera_image', 'stats',
       ]
       const sources = new Map<string, string>()
       for (const comp of components) {
         sources.set(comp, `/waymo_data/${comp}/${segmentId}.parquet`)
       }
       await actions.loadDataset(sources as Map<string, File | string>)
+    },
+
+    loadFromFiles: async (segments: Map<string, Map<string, File>>) => {
+      // Store file references for later use by selectSegment
+      internal.filesBySegment = segments
+      const segmentIds = [...segments.keys()].sort()
+      set({ availableSegments: segmentIds })
+
+      // Auto-select if only one segment, otherwise select first
+      if (segmentIds.length > 0) {
+        await get().actions.selectSegment(segmentIds[0])
+      }
     },
 
     reset: () => {
@@ -677,7 +719,7 @@ async function loadFrameMainThread(
   return frameData
 }
 
-async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
+async function loadStartupData(set: (partial: Partial<SceneState>) => void, get: () => SceneState) {
   // Vehicle pose → master frame list
   const posePf = internal.parquetFiles.get('vehicle_pose')
   if (posePf) {
@@ -739,6 +781,60 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
     // Sort each trajectory by frame index
     for (const trail of internal.objectTrajectories.values()) {
       trail.sort((a, b) => a.frameIndex - b.frameIndex)
+    }
+  }
+
+  // Stats (segment metadata: time of day, location, weather, object counts)
+  const statsPf = internal.parquetFiles.get('stats')
+  if (statsPf) {
+    // Only read the first row — metadata is constant across frames
+    const rows = await readAllRows(statsPf, [
+      'key.segment_context_name',
+      '[StatsComponent].time_of_day',
+      '[StatsComponent].location',
+      '[StatsComponent].weather',
+      '[StatsComponent].lidar_object_counts.types',
+      '[StatsComponent].lidar_object_counts.counts',
+    ])
+    if (rows.length > 0) {
+      const row = rows[0]
+      const segmentId = row['key.segment_context_name'] as string
+      const types = (row['[StatsComponent].lidar_object_counts.types'] as number[]) ?? []
+      const counts = (row['[StatsComponent].lidar_object_counts.counts'] as number[]) ?? []
+
+      // Average object counts across all frames
+      const totalCounts: Record<number, number> = {}
+      for (let i = 0; i < types.length; i++) {
+        totalCounts[types[i]] = (counts[i] ?? 0)
+      }
+      // Compute per-frame averages from all rows
+      if (rows.length > 1) {
+        const frameCounts: Record<number, number[]> = {}
+        for (const r of rows) {
+          const ts = (r['[StatsComponent].lidar_object_counts.types'] as number[]) ?? []
+          const cs = (r['[StatsComponent].lidar_object_counts.counts'] as number[]) ?? []
+          for (let i = 0; i < ts.length; i++) {
+            if (!frameCounts[ts[i]]) frameCounts[ts[i]] = []
+            frameCounts[ts[i]].push(cs[i] ?? 0)
+          }
+        }
+        for (const [t, arr] of Object.entries(frameCounts)) {
+          totalCounts[Number(t)] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
+        }
+      }
+
+      const meta: SegmentMeta = {
+        segmentId,
+        timeOfDay: (row['[StatsComponent].time_of_day'] as string) ?? 'Unknown',
+        location: (row['[StatsComponent].location'] as string) ?? 'Unknown',
+        weather: (row['[StatsComponent].weather'] as string) ?? 'Unknown',
+        objectCounts: totalCounts,
+      }
+
+      const prev = get().segmentMetas
+      const next = new Map(prev)
+      next.set(segmentId, meta)
+      set({ segmentMetas: next })
     }
   }
 
