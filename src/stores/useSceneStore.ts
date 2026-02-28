@@ -47,7 +47,6 @@ import { CameraWorkerPool } from '../workers/cameraWorkerPool'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type BoxMode = 'off' | 'box' | 'model'
-
 export interface FrameData {
   timestamp: bigint
   pointCloud: PointCloud | null
@@ -323,8 +322,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
         // 1. Open all Parquet files (footer only — lightweight, main thread OK)
         for (const [component, source] of sources) {
-          const pf = await openParquetFile(component, source)
-          internal.parquetFiles.set(component, pf)
+          try {
+            const pf = await openParquetFile(component, source)
+            internal.parquetFiles.set(component, pf)
+          } catch {
+            // Optional components (e.g. segmentation) may not exist — skip silently
+            console.warn(`[store] Could not open ${component}, skipping`)
+          }
           completed++
           set({ loadProgress: completed / totalSteps })
         }
@@ -451,8 +455,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     },
 
     togglePlayback: () => {
-      if (get().isPlaying) get().actions.pause()
-      else get().actions.play()
+      if (get().isPlaying) {
+        get().actions.pause()
+      } else {
+        // If at the end, rewind to start before playing
+        if (get().currentFrameIndex >= get().totalFrames - 1) {
+          get().actions.loadFrame(0).then(() => get().actions.play())
+        } else {
+          get().actions.play()
+        }
+      }
     },
 
     setPlaybackSpeed: (speed) => {
@@ -708,6 +720,7 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void) {
       trail.sort((a, b) => a.frameIndex - b.frameIndex)
     }
   }
+
 }
 
 // ---------------------------------------------------------------------------

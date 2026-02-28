@@ -276,7 +276,7 @@ export default function LidarViewer() {
           )
         })}
 
-        {/* Perception: box mode toggle + trail slider */}
+        {/* Perception controls */}
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: '4px' }}>
           <button
             onClick={cycleBoxMode}

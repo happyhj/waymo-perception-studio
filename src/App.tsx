@@ -38,6 +38,23 @@ function useSegmentDiscovery() {
 
 function App() {
   useSegmentDiscovery()
+  const status = useSceneStore((s) => s.status)
+  const togglePlayback = useSceneStore((s) => s.actions.togglePlayback)
+
+  // Global spacebar → play/pause toggle
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && status === 'ready') {
+        // Don't trigger if user is typing in an input/textarea
+        const tag = (e.target as HTMLElement)?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+        e.preventDefault()
+        togglePlayback()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [status, togglePlayback])
 
   return (
     <div style={{

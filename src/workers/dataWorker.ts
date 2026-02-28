@@ -181,7 +181,9 @@ async function handleMessage(msg: DataWorkerRequest) {
 
         const sensorClouds: SensorCloudResult[] = []
         for (const [laserName, cloud] of result.perSensor) {
-          sensorClouds.push({ laserName, positions: cloud.positions, pointCount: cloud.pointCount })
+          const scResult: SensorCloudResult = { laserName, positions: cloud.positions, pointCount: cloud.pointCount }
+
+          sensorClouds.push(scResult)
           transferBuffers.push(cloud.positions.buffer)
         }
 

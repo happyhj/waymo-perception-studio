@@ -5,7 +5,7 @@
  * When all sensors visible, uses pre-merged buffer (zero copy).
  * When some hidden, merges only visible sensor clouds on the fly.
  *
- * Intensity is mapped to a turbo-like colormap for visual clarity.
+ * Color mode: turbo colormap based on intensity.
  */
 
 import { useRef, useEffect, useMemo } from 'react'
@@ -115,7 +115,7 @@ export default function PointCloud() {
       geom.setDrawRange(0, count)
       geom.computeBoundingSphere()
     } else {
-      // Filtered path: merge only visible sensors, color by sensor
+      // Per-sensor path: merge visible sensors with sensor coloring
       const sensorClouds = currentFrame.sensorClouds
       if (!sensorClouds || sensorClouds.size === 0) {
         geom.setDrawRange(0, 0)
@@ -126,7 +126,6 @@ export default function PointCloud() {
       for (const [laserName, cloud] of sensorClouds) {
         if (!visibleSensors.has(laserName)) continue
         const count = Math.min(cloud.pointCount, MAX_POINTS - total)
-        const color = SENSOR_COLORS[laserName] ?? [0.5, 0.5, 0.5]
         const { positions } = cloud
 
         for (let i = 0; i < count; i++) {
@@ -135,6 +134,9 @@ export default function PointCloud() {
           posArr[dst] = positions[src]
           posArr[dst + 1] = positions[src + 1]
           posArr[dst + 2] = positions[src + 2]
+
+          // Sensor coloring
+          const color = SENSOR_COLORS[laserName] ?? [0.5, 0.5, 0.5]
           colArr[dst] = color[0]
           colArr[dst + 1] = color[1]
           colArr[dst + 2] = color[2]
