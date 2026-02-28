@@ -130,6 +130,7 @@ export async function readRowRange(
   rowStart: number,
   rowEnd: number,
   columns?: string[],
+  options?: { utf8?: boolean },
 ): Promise<ParquetRow[]> {
   return parquetReadObjects({
     file: pf.buffer,
@@ -139,6 +140,7 @@ export async function readRowRange(
     rowStart,
     rowEnd,
     rowFormat: 'object',
+    utf8: options?.utf8,
   })
 }
 
@@ -157,10 +159,11 @@ export async function readRowGroupRows(
   pf: WaymoParquetFile,
   rowGroupIndex: number,
   columns?: string[],
+  options?: { utf8?: boolean },
 ): Promise<ParquetRow[]> {
   const rg = pf.rowGroups[rowGroupIndex]
   if (!rg) return []
-  return readRowRange(pf, rg.rowStart, rg.rowEnd, columns)
+  return readRowRange(pf, rg.rowStart, rg.rowEnd, columns, options)
 }
 
 // ---------------------------------------------------------------------------

@@ -19,7 +19,6 @@ import { groupIndexBy } from '../utils/merge'
 import {
   openParquetFile,
   readAllRows,
-  readRowGroupRows,
   buildFrameIndex,
   buildHeavyFileFrameIndex,
   readFrameData,
@@ -36,7 +35,11 @@ import {
 import type {
   DataWorkerRowGroupResult,
 } from '../workers/dataWorker'
+import type {
+  CameraWorkerRowGroupResult,
+} from '../workers/cameraWorker'
 import { WorkerPool } from '../workers/workerPool'
+import { CameraWorkerPool } from '../workers/cameraWorkerPool'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,6 +98,10 @@ export interface SceneState {
   // Prefetch progress (for YouTube-style buffer bar)
   /** Sorted array of cached frame indices */
   cachedFrames: number[]
+  /** Number of camera row groups loaded so far */
+  cameraLoadedCount: number
+  /** Total camera row groups to load */
+  cameraTotalCount: number
   /** Which sensors are visible (1=TOP,2=FRONT,3=SIDE_LEFT,4=SIDE_RIGHT,5=REAR) */
   visibleSensors: Set<number>
   // Actions
@@ -117,12 +124,21 @@ const internal = {
   vehiclePoseByFrame: new Map<unknown, ParquetRow[]>(),
   /** No eviction needed — row-group loading caches all ~199 frames, which is the goal. */
   frameCache: new Map<number, FrameData>(),
+  /** Separate camera image cache (frameIndex → cameraName → JPEG ArrayBuffer).
+   *  Stored independently so camera data is never lost due to lidar timing. */
+  cameraImageCache: new Map<number, Map<number, ArrayBuffer>>(),
   playIntervalId: null as ReturnType<typeof setInterval> | null,
-  /** Worker pool for parallel row group loading */
+  /** Worker pool for parallel row group loading (lidar) */
   workerPool: null as WorkerPool | null,
   numRowGroups: 0,
-  /** Track which row groups have been loaded or are in-flight */
+  /** Track which lidar row groups have been loaded or are in-flight */
   loadedRowGroups: new Set<number>(),
+  /** Camera worker pool */
+  cameraPool: null as CameraWorkerPool | null,
+  cameraNumRowGroups: 0,
+  /** Track which camera row groups have been loaded or are in-flight */
+  cameraLoadedRowGroups: new Set<number>(),
+  cameraPrefetchStarted: false,
   /** Prevent duplicate prefetchAllRowGroups calls (React StrictMode) */
   prefetchStarted: false,
   /** Last per-frame conversion time (for performance tracking) */
@@ -138,6 +154,7 @@ function resetInternal() {
   internal.lidarBoxByFrame.clear()
   internal.vehiclePoseByFrame.clear()
   internal.frameCache.clear()
+  internal.cameraImageCache.clear()
   internal.loadedRowGroups.clear()
   internal.prefetchStarted = false
   if (internal.playIntervalId !== null) {
@@ -149,6 +166,13 @@ function resetInternal() {
     internal.workerPool = null
   }
   internal.numRowGroups = 0
+  if (internal.cameraPool) {
+    internal.cameraPool.terminate()
+    internal.cameraPool = null
+  }
+  internal.cameraNumRowGroups = 0
+  internal.cameraLoadedRowGroups.clear()
+  internal.cameraPrefetchStarted = false
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +228,26 @@ function cacheRowGroupFrames(
   syncCachedFrames(set)
 }
 
+/** Cache all camera images from a camera row group result (separate cache) */
+function cacheCameraRowGroupFrames(
+  result: CameraWorkerRowGroupResult,
+) {
+  for (const frame of result.frames) {
+    const timestamp = BigInt(frame.timestamp)
+    const frameIndex = internal.timestampToFrame.get(timestamp)
+    if (frameIndex === undefined) continue
+
+    let camMap = internal.cameraImageCache.get(frameIndex)
+    if (!camMap) {
+      camMap = new Map()
+      internal.cameraImageCache.set(frameIndex, camMap)
+    }
+    for (const img of frame.images) {
+      camMap.set(img.cameraName, img.jpeg)
+    }
+  }
+}
+
 /** Update the cachedFrames state for the buffer bar UI */
 function syncCachedFrames(set: (partial: Partial<SceneState>) => void) {
   const indices = [...internal.frameCache.keys()].sort((a, b) => a - b)
@@ -229,6 +273,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   lastFrameLoadMs: 0,
   lastConvertMs: 0,
   cachedFrames: [],
+  cameraLoadedCount: 0,
+  cameraTotalCount: 0,
   visibleSensors: new Set([1, 2, 3, 4, 5]),
 
   actions: {
@@ -259,8 +305,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         completed++
         set({ loadProgress: completed / totalSteps })
 
-        // 3. Init Data Worker for heavy lidar I/O
+        // 3. Init Data Workers for heavy I/O (lidar + camera)
         await initDataWorker(sources, get)
+        await initCameraWorker(sources)
         completed++
         set({ loadProgress: completed / totalSteps })
 
@@ -279,12 +326,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
         const rgMs = performance.now() - rgT0
 
-        // Show first frame
+        // Show first frame (merge camera data if already available)
         const firstFrame = internal.frameCache.get(0)
         if (firstFrame) {
+          const camData = internal.cameraImageCache.get(0)
           set({
             currentFrameIndex: 0,
-            currentFrame: firstFrame,
+            currentFrame: {
+              ...firstFrame,
+              cameraImages: camData ? new Map(camData) : new Map(),
+            },
             lastFrameLoadMs: rgMs,
             lastConvertMs: internal.lastConvertMs,
           })
@@ -302,6 +353,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           internal.prefetchStarted = true
           prefetchAllRowGroups(set, get)
         }
+
+        // 6. Prefetch camera images in parallel (after lidar starts)
+        if (internal.cameraPool?.isReady() && !internal.cameraPrefetchStarted) {
+          internal.cameraPrefetchStarted = true
+          prefetchAllCameraRowGroups(set)
+        }
       } catch (e) {
         set({
           status: 'error',
@@ -316,9 +373,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       // Cache hit — instant (the common case after prefetch completes)
       const cached = internal.frameCache.get(frameIndex)
       if (cached) {
+        // Merge camera images from separate cache (always create new Map for re-render)
+        const camData = internal.cameraImageCache.get(frameIndex)
+        const cameraImages = camData ? new Map(camData) : new Map<number, ArrayBuffer>()
+
         set({
           currentFrameIndex: frameIndex,
-          currentFrame: cached,
+          currentFrame: {
+            ...cached,
+            cameraImages,
+          },
           lastFrameLoadMs: 0,
           lastConvertMs: cached.pointCloud ? get().lastConvertMs : 0,
         })
@@ -395,6 +459,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         lastFrameLoadMs: 0,
         lastConvertMs: 0,
         cachedFrames: [],
+        cameraLoadedCount: 0,
+        cameraTotalCount: 0,
         visibleSensors: new Set([1, 2, 3, 4, 5]),
       })
     },
@@ -566,6 +632,72 @@ async function initDataWorker(
 
   internal.workerPool = pool
   internal.numRowGroups = numRowGroups
+}
+
+/** Initialize camera worker pool (separate from lidar pool) */
+async function initCameraWorker(
+  sources: Map<string, File | string>,
+) {
+  const cameraSource = sources.get('camera_image')
+  if (!cameraSource || typeof cameraSource !== 'string') {
+    return
+  }
+
+  // Use fewer workers for camera (2) — camera is I/O bound, less CPU needed
+  const pool = new CameraWorkerPool(2)
+  const { numRowGroups } = await pool.init({ cameraUrl: cameraSource })
+
+  internal.cameraPool = pool
+  internal.cameraNumRowGroups = numRowGroups
+  useSceneStore.setState({ cameraTotalCount: numRowGroups })
+}
+
+/** Load + cache a single camera row group */
+async function loadAndCacheCameraRowGroup(
+  rgIndex: number,
+  set: (partial: Partial<SceneState>) => void,
+): Promise<void> {
+  if (internal.cameraLoadedRowGroups.has(rgIndex)) return
+  internal.cameraLoadedRowGroups.add(rgIndex)
+
+  try {
+    const result = await internal.cameraPool!.requestRowGroup(rgIndex)
+    cacheCameraRowGroupFrames(result)
+
+    // Update camera loading progress
+    set({ cameraLoadedCount: internal.cameraLoadedRowGroups.size })
+
+    // Force re-render of current frame with new camera data
+    const state = useSceneStore.getState()
+    const fi = state.currentFrameIndex
+    const cached = internal.frameCache.get(fi)
+    const camData = internal.cameraImageCache.get(fi)
+    if (cached && camData && camData.size > 0) {
+      set({
+        currentFrame: {
+          ...cached,
+          cameraImages: new Map(camData),
+        },
+      })
+    }
+  } catch (e) {
+    console.error(`[CameraPool] Failed to load RG ${rgIndex}:`, e)
+    internal.cameraLoadedRowGroups.delete(rgIndex)
+  }
+}
+
+/** Prefetch all camera row groups in parallel */
+async function prefetchAllCameraRowGroups(
+  set: (partial: Partial<SceneState>) => void,
+) {
+  const promises: Promise<void>[] = []
+  for (let rg = 0; rg < internal.cameraNumRowGroups; rg++) {
+    if (internal.cameraLoadedRowGroups.has(rg)) continue
+    promises.push(
+      loadAndCacheCameraRowGroup(rg, set).catch(() => {}),
+    )
+  }
+  await Promise.all(promises)
 }
 
 // ---------------------------------------------------------------------------

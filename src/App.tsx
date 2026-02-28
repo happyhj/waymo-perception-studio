@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useMemo } from 'react'
 import { useSceneStore } from './stores/useSceneStore'
 import LidarViewer from './components/LidarViewer/LidarViewer'
+import CameraPanel from './components/CameraPanel/CameraPanel'
 
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ const DEV_COMPONENTS = [
   'camera_calibration',
   'lidar_box',
   'lidar',
+  'camera_image',
 ]
 
 function useDevAutoLoad() {
@@ -80,12 +82,30 @@ function Header() {
   const status = useSceneStore((s) => s.status)
   const totalFrames = useSceneStore((s) => s.totalFrames)
   const loadProgress = useSceneStore((s) => s.loadProgress)
+  const cachedFrames = useSceneStore((s) => s.cachedFrames)
+  const cameraLoadedCount = useSceneStore((s) => s.cameraLoadedCount)
+  const cameraTotalCount = useSceneStore((s) => s.cameraTotalCount)
 
-  const statusText =
-    status === 'idle' ? 'No segment loaded' :
-    status === 'loading' ? `Loading… ${Math.round(loadProgress * 100)}%` :
-    status === 'ready' ? `${totalFrames} frames` :
-    'Error'
+  let statusText: string
+  if (status === 'idle') {
+    statusText = 'No segment loaded'
+  } else if (status === 'loading') {
+    statusText = `Loading… ${Math.round(loadProgress * 100)}%`
+  } else if (status === 'error') {
+    statusText = 'Error'
+  } else {
+    // status === 'ready' — show prefetch progress
+    const lidarDone = cachedFrames.length >= totalFrames
+    const cameraDone = cameraTotalCount > 0 && cameraLoadedCount >= cameraTotalCount
+    if (lidarDone && cameraDone) {
+      statusText = `${totalFrames} frames`
+    } else {
+      const parts: string[] = []
+      if (!lidarDone) parts.push(`LiDAR ${cachedFrames.length}/${totalFrames}`)
+      if (!cameraDone && cameraTotalCount > 0) parts.push(`Camera ${cameraLoadedCount}/${cameraTotalCount}`)
+      statusText = `Caching… ${parts.join(' · ')}`
+    }
+  }
 
   return (
     <header style={{
@@ -115,21 +135,26 @@ function SensorView() {
   const status = useSceneStore((s) => s.status)
 
   return (
-    <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-      {/* LiDAR 3D View — full area */}
-      <div style={{ position: 'absolute', inset: 0 }}>
-        {status === 'ready' ? (
-          <LidarViewer />
-        ) : status === 'loading' ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
-            Loading LiDAR data…
-          </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
-            3D LiDAR View
-          </div>
-        )}
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* LiDAR 3D View — main area */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', inset: 0 }}>
+          {status === 'ready' ? (
+            <LidarViewer />
+          ) : status === 'loading' ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
+              Loading LiDAR data…
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', backgroundColor: '#0f3460', opacity: 0.5 }}>
+              3D LiDAR View
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Camera Image Strip — bottom */}
+      {status === 'ready' && <CameraPanel />}
     </div>
   )
 }
