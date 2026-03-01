@@ -90,7 +90,7 @@ Apply 4×4 extrinsic matrix from `lidar_calibration`:
 
 The conversion is **embarrassingly parallel** — each pixel is independent (cos, sin, matrix mul).
 
-- **CPU Web Worker Pool** (current): 4 parallel workers, each processing a row group (~51 frames). ~5ms/frame for all 5 sensors (~168K points). Fast enough for 10Hz playback.
+- **CPU Web Worker Pool** (current): 3 LiDAR workers + 2 camera workers (see D33). Each processes a row group (~51 frames). ~5ms/frame for all 5 sensors (~168K points). Fast enough for 10Hz playback.
 - **WebGPU Compute Shader** (implemented but unused): `rangeImageGpu.ts` exists with working compute shader. Deferred because CPU Worker Pool + row-group batching already achieves <5ms/frame, and WebGPU adds browser compatibility concerns.
 
 ```
@@ -211,7 +211,14 @@ erksch doesn't do this conversion in the browser at all. Python server calls `fr
 - **Paper**: Street Gaussians for Modeling Dynamic Urban Scenes
 - **What it does**: Static background (standard 3DGS) + dynamic foreground (tracked pose + 4D SH). Clean background rendering with vehicle removal. Novel view synthesis including BEV.
 - **Performance**: PSNR ~28, 135 FPS, ~30 min training per segment
-- **Why we use it**: Waymo has no top-down camera → need Novel View Synthesis for BEV → 3DGS is the approach. Street Gaussians is Waymo-compatible and fast to train.
+- **Status**: Superseded by DriveStudio/OmniRe for this project (see D34).
+
+### DriveStudio / OmniRe (ICLR 2025 Spotlight)
+- **GitHub**: https://github.com/ziyc/drivestudio
+- **Paper**: OmniRe: Omni Urban Scene Reconstruction (ICLR 2025 Spotlight)
+- **What it does**: 통합 driving scene reconstruction 프레임워크. 정적 배경 + 동적 rigid 객체(차량) + non-rigid 요소(보행자) 통합 재구성. Waymo, nuScenes, PandaSet 등 주요 데이터셋 지원.
+- **Street Gaussians 대비 장점**: non-rigid 보행자 처리, 멀티 데이터셋 통합 지원, 활발한 커뮤니티
+- **Why we use it**: Waymo에 top-down camera 없음 → 3DGS로 BEV 생성 필요. OmniRe가 2025 최신 SOTA이며 Waymo 데이터셋 직접 지원.
 
 ### gsplat.js
 - **GitHub**: https://github.com/dylanebert/gsplat.js
@@ -220,15 +227,16 @@ erksch doesn't do this conversion in the browser at all. Python server calls `fr
 
 ## 4. Differentiation Matrix
 
-| Feature | erksch (2019) | Foxglove (2024) | Ours (2026) |
-|---------|--------------|----------------|-------------|
-| Dataset | v1.0 TFRecord | ROS/MCAP | **v2.0 Parquet native** |
-| Server | Python + TF | Desktop App | **None (browser)** |
-| LiDAR | ✅ | ✅ | ✅ |
-| Camera | ❌ | ✅ | ✅ |
-| Segmentation | ❌ | ✅ | ❌ (sparse data) |
-| Dual 3D View | ❌ | ✅ | ✅ |
-| 3DGS BEV | ❌ | ❌ | **✅ Killer Feature** |
+| Feature | erksch (2019) | Foxglove (2024) | Rerun (2024) | Ours (2026) |
+|---------|--------------|----------------|--------------|-------------|
+| Dataset | v1.0 TFRecord | ROS/MCAP | Custom SDK | **v2.0 Parquet native** |
+| Install | Python + TF server | Desktop app | pip install | **None (browser)** |
+| LiDAR | ✅ | ✅ | ✅ | ✅ |
+| Camera | ❌ | ✅ | ✅ | ✅ |
+| Keyboard nav | ❌ | ✅ | ✅ | ✅ (←→, J/L, Space, ?) |
+| Drag & drop | ❌ | ❌ | ❌ | **✅ Folder drop** |
+| 3DGS BEV | ❌ | ❌ | ❌ | **✅ Killer Feature** |
+| Cross-modal sync | ❌ | Partial | Partial | **✅ Frustum hover sync** |
 
 ## 4. Visualization Features (Implemented)
 
@@ -244,10 +252,30 @@ erksch doesn't do this conversion in the browser at all. Python server calls `fr
 
 Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 
-### Sensor View (Current Layout)
+### Landing Page (No Data Loaded)
 ```
 ┌──────────────────────────────────────────────────┐
-│ [Segment Selector ▾]            waymo-perception  │ ← Header (visible when >1 segment)
+│                                                    │
+│            Perception Studio                       │
+│  In-browser perception explorer for Waymo Open     │
+│  Dataset v2.0.1. No setup, no server — just drop   │
+│  Parquet files and explore.                        │
+│                                                    │
+│          ┌─────────────────────────┐               │
+│          │   📂 Drop waymo_data/   │               │
+│          │   folder here           │               │
+│          │   or  [Select Folder]   │               │
+│          └─────────────────────────┘               │
+│                                                    │
+│  ▸ How to get data                                 │ ← Collapsible download script
+│                                                    │
+└──────────────────────────────────────────────────┘
+```
+
+### Sensor View (Data Loaded)
+```
+┌──────────────────────────────────────────────────┐
+│ [Segment Selector ▾]            Perception Studio  │ ← Header (visible when >1 segment)
 ├──────────────────────────────────────────────────┤
 │                                                    │
 │   3D LiDAR View                                    │ ← Main viewport
@@ -257,11 +285,12 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 │                              [BOX: MODE]           │
 │                              [TRAIL: slider]       │
 │                                                    │
+│  [←→ frame · J L ±10 · Space play · ? shortcuts]   │ ← ShortcutHints (auto-fade 5s)
 ├──────────────────────────────────────────────────┤
 │ SL | FL | FRONT | FR | SR                          │ ← Camera strip (160px)
 │ (click = POV toggle, hover = frustum highlight)    │
 ├──────────────────────────────────────────────────┤
-│ ◀ ▶  ────●──────────── 042/199   ×1   SPACE=⏯    │ ← Timeline + buffer bar
+│ ▶  ────●──────────── 042/199   ×1                  │ ← Timeline + buffer bar
 └──────────────────────────────────────────────────┘
 ```
 
@@ -274,14 +303,16 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 1. ✅ **MVP (2 days)**: Parquet loading + LiDAR point cloud (range image→xyz) + bounding boxes + timeline
 2. ✅ **Camera + Perception (1.5 days)**: 5 camera panels with parallel worker loading + Camera-LiDAR sync + POV switching + camera frustum visualization + hover highlight sync
 3. ✅ **Multi-segment + Polish (0.5 day)**: Segment auto-discovery + dropdown selector + spacebar play/pause + trajectory trails
-4. ⬜ **3DGS BEV (1 day)**: Street Gaussians training + .ply export + gsplat.js renderer
-5. ⬜ **Polish (0.5 day)**: README, deployment, demo GIF, LinkedIn post
+4. ✅ **UX Polish (1 day)**: Waymo-inspired dark theme + drag & drop folder loading + keyboard shortcuts + loading skeleton + landing page with download guide + README rewrite
+5. ⬜ **3DGS BEV (1 day)**: DriveStudio/OmniRe training + .ply export + gsplat.js renderer
+6. ⬜ **Deploy (0.5 day)**: GitHub Pages deployment, demo GIF, LinkedIn post
 
 ## 7. 3DGS Strategy
 
-### Approach: Street Gaussians (ECCV 2024)
-- Static background (standard 3DGS) + Dynamic foreground (tracked pose + 4D SH)
-- ~30 min training per segment, 135 FPS rendering
+### Approach: DriveStudio / OmniRe (ICLR 2025 Spotlight)
+- 통합 프레임워크: 정적 배경 + 동적 객체 + non-rigid 요소(보행자) 통합 재구성
+- Waymo, nuScenes, PandaSet 등 주요 데이터셋 지원
+- Street Gaussians (ECCV 2024) 대비: non-rigid 요소 처리 우수, 학술 인용에 유리
 - Export .ply → bundle with app → orthographic BEV camera
 
 ### Distribution
@@ -289,16 +320,24 @@ Dark theme (#1a1a2e). Two tabs: [Sensor View] [3DGS Lab 🧪]
 - Same segment as README's recommended download → direct raw-vs-reconstructed comparison
 - 3DGS Lab works with zero data download
 
+### Perception Analysis 관점
+- 3D bounding box prediction: 1프레임 입력 → single-frame 추론
+- 3DGS reconstruction: ~200프레임 전체 학습 → dense multi-frame context
+- 3DGS가 single-frame perception보다 ground truth에 가까운 scene representation 제공
+- Perception engineer가 prediction과 3DGS를 교차 비교 → false positive/negative 원인 분석 가능
+- LiDAR (sparse + accurate) + Camera (dense + 2D) + 3DGS (dense + 3D) = 상호 보완적 3가지 뷰
+
 ## 8. Performance Notes
 
-- LiDAR range image → xyz: WebGPU Compute Shader (~1-2ms) with CPU Web Worker fallback (~30-50ms)
+- LiDAR range image → xyz: CPU Web Worker (~5ms/frame). WebGPU Compute Shader implemented but deferred (see D8).
 - Point cloud: BufferGeometry + Points
 - Bounding boxes: InstancedMesh (avg 94/frame)
+- Worker pools: 3 LiDAR workers + 2 camera workers (see D33). Promise.all parallel init.
+- Row group pre-loading: 2 RGs loaded before render start to prevent playback stall (see D30).
 - Lazy frame loading: current ± N frames in memory, prefetch ahead
 - camera_image/lidar: row-group random access, never full file
 - Calibrations + boxes + poses: full load at startup (<2MB total)
 - Perf-critical rendering: useFrame + imperative refs
-- WebGPU availability: Chrome 113+, Edge 113+, Safari 17.4+. Firefox fallback to Web Worker.
 
 ### R3F vs Vanilla Three.js — 성능 동등성
 
@@ -314,7 +353,7 @@ R3F(@react-three/fiber)는 Three.js 위의 얇은 React 바인딩이며, 렌더 
 
 ## 9. Interview Narrative
 
-"I analyzed Foxglove Studio and erksch's viewer, then built a Waymo v2.0-native visualization tool. Existing viewers require Python + TensorFlow servers or ROS conversion. Mine reads v2.0 Parquet natively in the browser — no server, no install. The 3DGS Bird's Eye View is unique — Waymo has no top-down camera, so I used Street Gaussians for Novel View Synthesis. I applied WebGL optimization experience from View360 (530+ stars, adopted by Amazon.com)."
+"I built a browser-native perception explorer for Waymo Open Dataset v2.0 — no server, no install, just drag & drop Parquet files and explore LiDAR + camera + 3D annotations interactively. Existing tools like Foxglove require desktop install and ROS conversion; erksch's viewer needs a Python + TensorFlow server. Mine reads v2.0 Parquet directly in the browser with Web Worker pools for parallel BROTLI decompression and range image conversion. The key technical challenge was converting LiDAR range images to xyz point clouds entirely in the browser — something previously only done server-side with TensorFlow. For the 3DGS Bird's Eye View, I'm using DriveStudio/OmniRe (ICLR 2025 Spotlight) to provide dense scene context that complements sparse LiDAR and 2D camera views for perception debugging."
 
 ## 10. Decision Log
 
@@ -575,6 +614,103 @@ Chronological record of technical decisions and the reasoning behind them.
 - **input 보호**: `e.target.tagName`이 INPUT/TEXTAREA/SELECT면 무시 (텍스트 입력 중 오동작 방지).
 - **Auto-rewind**: 마지막 프레임(currentFrameIndex >= totalFrames - 1)에서 play 시 자동으로 frame 0으로 이동 후 재생 시작.
 
+### D26. Waymo-Inspired UI Theme — 다크 테마 + 컬러 체계
+
+- **배경**: 기본 R3F 씬이 개발 도구 느낌이라 포트폴리오 품질에 미달. Waymo 브랜드와 조화되는 전문적 UI 필요.
+- **결정**: 다크 테마 (#1a1a2e 배경) + Waymo teal (#00bfa5) 액센트 컬러. 전체 레이아웃을 Full-screen 3D viewport + 하단 카메라 스트립 + 타임라인으로 고정.
+- **세부 변경**: LiDAR 뷰어 배경을 검정(#0a0a1a)으로, 카메라 패널 160px 고정 높이, 타임라인 컨트롤을 teal 계열로 통일, 세그먼트 셀렉터 + 상태 표시를 상단 바에 집약.
+
+### D27. Drag & Drop + Folder Picker — File 객체를 Worker에 직접 전달
+
+- **문제**: GitHub Pages 배포 시 `/api/segments` 엔드포인트 없음. 사용자가 `waymo_data/` 폴더를 드래그 & 드롭해야 함.
+- **해결**: `folderScan.ts` 유틸 신규 추가. `FileSystemDirectoryHandle` (Chrome `showDirectoryPicker()`) 또는 `DataTransferItem.webkitGetAsEntry()` (드래그 & 드롭)로 폴더 트래버싱.
+  - 폴더 구조 `{component}/{segment_id}.parquet` 파싱 → `Map<segmentId, Map<component, File>>` 반환
+  - `vehicle_pose/` 서브폴더 존재 여부로 세그먼트 자동 탐지
+  - 상위 `waymo_data/` 폴더가 없이 component 폴더를 직접 드롭해도 처리
+- **Worker 전달 방식**: `File` 객체를 `postMessage`로 직접 전달 (structured clone). Worker 내에서 `File.slice()` → `ArrayBuffer`로 Parquet 읽기. `URL.createObjectURL()`이 불필요해짐.
+  - 이전 계획에서는 blob URL 방식을 고려했으나, `File`이 structured clone 가능하고 `hyparquet`의 `AsyncBuffer`가 File을 직접 지원하므로 더 단순한 방식 채택.
+- **Store 변경**: `loadFromFiles(segments)` 액션 추가. `internal.filesBySegment`에 File Map 저장. `selectSegment()`가 file 모드 vs URL 모드를 자동 분기.
+
+### D28. 세그먼트 메타데이터 — stats 컴포넌트 활용
+
+- **발견**: `stats` Parquet에 세그먼트별 `location`, `time_of_day`, `weather` 등 메타데이터 존재.
+- **활용**: 드롭다운 옵션에 `#1 · 10023947… · SF Downtown · Day` 형식으로 truncated segment ID + 위치 + 시간대 표시.
+- **LOCATION_LABELS 매핑**: `location_sf_downtown` → `SF Downtown`, `location_phx_mesa` → `Phoenix Mesa` 등 Waymo 공식 location 코드를 사람이 읽기 좋은 라벨로 변환.
+
+### D29. Keyboard Shortcuts — 프레임 탐색 + ShortcutHints
+
+- **구현**: `App.tsx`에서 global `keydown` 리스너.
+  - `← →`: ±1 프레임
+  - `J L`: ±10 프레임 (빠른 탐색)
+  - `Space`: play/pause
+  - `Shift+← →`: 이전/다음 세그먼트
+  - `?`: ShortcutHints 토글
+- **ShortcutHints 컴포넌트**: 첫 로드 시 5초간 표시 후 자동 페이드아웃 (CSS opacity transition 300ms). `?` 키로 재표시/숨김 토글. 아무 키 입력(? 제외) 시 페이드아웃 트리거.
+- **Input 보호**: 모든 키보드 핸들러에서 `e.target.tagName`이 INPUT/TEXTAREA/SELECT면 무시.
+
+### D30. 2개 Row Group 사전 로딩 — RG 경계 재생 끊김 방지
+
+- **문제**: 첫 RG만 로딩 후 렌더 시작 → 자동재생이 두 번째 RG 경계에 도달하면 아직 로딩 중이라 재생이 잠시 멈춤.
+- **기존 메커니즘**: `setInterval` 기반 재생에서 캐시 미스 시 retry (100ms 폴링). 멈추진 않지만 눈에 띄는 끊김 발생.
+- **시도했으나 철회한 방식**: `rgLoadPromises` Map으로 진행 중인 RG 로딩을 추적하고 `loadFrame`에서 await하는 방식. 기존 poll-based retry가 이미 동작하고 있었고, 불필요한 복잡도 추가라 판단하여 `git checkout`으로 즉시 롤백.
+- **채택한 방식**: `loadDataset()` 에서 첫 프레임 로딩 단계를 RG 0 + RG 1 병렬 로딩으로 확장. LiDAR와 Camera 각각 2개 RG를 `Promise.all`로 동시 로딩. ~100프레임 분량이 사전 캐싱되어 prefetch가 따라잡을 시간 확보.
+  ```ts
+  // LiDAR RG 0+1
+  firstFramePromises.push(loadAndCacheRowGroup(0, set))
+  if (internal.numRowGroups > 1) firstFramePromises.push(loadAndCacheRowGroup(1, set))
+  // Camera RG 0+1
+  firstFramePromises.push(loadAndCacheCameraRowGroup(0, set))
+  if (internal.cameraNumRowGroups > 1) firstFramePromises.push(loadAndCacheCameraRowGroup(1, set))
+  await Promise.all(firstFramePromises)
+  ```
+- **교훈**: 단순한 해결책(사전 로딩량 증가)이 복잡한 해결책(await 기반 로딩 파이프라인 변경)보다 나을 때가 있다.
+
+### D31. Loading Skeleton — 4단계 진행 표시 + 카메라 스트립 스켈레톤
+
+- **로딩 UX**: `loadStep` 상태로 4단계 진행 표시:
+  1. `calibration` — "Loading calibrations…"
+  2. `metadata` — "Loading frame metadata…"
+  3. `first-frame` — "Decoding first frame…"
+  4. `ready` — 렌더링 시작
+- **3D 뷰포트**: 로딩 중 반투명 오버레이 + 단계별 메시지 + CSS pulse 애니메이션.
+- **카메라 스트립 스켈레톤**: 5개 카메라 슬롯에 shimmer 애니메이션 (gradient slide). 실제 이미지가 로드되면 자연스럽게 교체.
+- **중복 제거**: 센터 로딩 스켈레톤이 이미 진행 상태를 보여주므로, 헤더의 "Loading… 100%" 텍스트와 타임라인의 ⏳ 이모지를 제거.
+
+### D32. Landing Page — 소개 + 다운로드 가이드
+
+- **문제**: README를 통해 접근하지 않은 방문자가 처음 보는 화면이 "드래그 앤 드롭하세요" — 맥락 없이 무엇을 드롭하라는 건지 모름.
+- **해결**: DropZone 상단에 소개 섹션 추가:
+  - 제목: "Perception Studio"
+  - 설명: "In-browser perception explorer for Waymo Open Dataset v2.0.1. No setup, no server — just drop Parquet files and explore."
+- **DownloadGuide 컴포넌트**: 접이식(collapsible) 쉘 스크립트 가이드.
+  - "How to get data ▸" 클릭 → gsutil 다운로드 스크립트 표시 (N=3 세그먼트 기본값)
+  - 복사 버튼 (navigator.clipboard.writeText)
+  - `overflow: auto` + 커스텀 투명 스크롤바로 긴 스크립트 스크롤 지원
+- **Product naming**: "Browser-based 3D viewer" → "In-browser perception explorer". Foxglove, Rerun 등 경쟁 제품의 자기 명명 관행 참고. "Zero-install"은 모호하여 제거, "No setup, no server"로 대체.
+
+### D33. Worker Concurrency 조정 — LiDAR 3 + Camera 2
+
+- **변경**: LiDAR Worker Pool을 4개 → 3개로 축소. Camera Worker Pool은 2개 유지.
+- **이유**: 총 5개 Worker가 동시 실행 시 CPU 코어 경합. LiDAR는 CPU-intensive (BROTLI 해제 + range image 변환), Camera는 I/O-bound (BROTLI 해제 + JPEG 추출). 3+2 = 5 Worker가 대부분의 머신에서 적정 수준.
+- **Worker 초기화**: `initWorkerPools()`에서 LiDAR Pool과 Camera Pool을 `Promise.all`로 병렬 초기화 — 순차 초기화 대비 ~50% 시간 단축.
+
+### D34. 3DGS 전략 업데이트 — DriveStudio/OmniRe 선호
+
+- **배경**: Street Gaussians (ECCV 2024) vs DriveStudio/OmniRe (ICLR 2025 Spotlight) 비교 검토.
+- **DriveStudio 장점**:
+  - Waymo, nuScenes, PandaSet 등 주요 데이터셋 모두 지원하는 통합 프레임워크
+  - OmniRe (ICLR 2025 Spotlight): 정적 배경 + 동적 객체 + non-rigid 요소(보행자) 통합 재구성
+  - 활발한 개발 + 커뮤니티 (GitHub 업데이트 빈번)
+  - 학술 논문에서 인용/비교에 유리
+- **Street Gaussians 한계**: 동적 전경 처리가 rigid-body 가정 (보행자 같은 non-rigid 객체에 약함)
+- **전략 변경**: 3DGS Lab에서 사용할 .ply 생성을 DriveStudio/OmniRe 파이프라인으로 전환 검토.
+- **Perception 분석 관점에서 3DGS의 의미**:
+  - 3D bounding box prediction은 보통 1프레임의 LiDAR/Camera 데이터로 생성
+  - 3DGS는 세그먼트 전체(~200프레임)의 데이터를 학습하여 dense reconstruction 생성
+  - 결과적으로 3DGS reconstruction이 single-frame perception보다 ground truth에 가까움
+  - LiDAR는 정확하지만 sparse, Camera는 dense하지만 2D → 3DGS가 dense + 3D context 제공
+  - Perception engineer가 prediction과 3DGS reconstruction을 교차 비교하면 false positive/negative 원인 분석 가능
+
 ## 11. Progress Tracker
 
 1. ✅ Project scaffolding (Vite + React + TS + R3F)
@@ -591,5 +727,14 @@ Chronological record of technical decisions and the reasoning behind them.
 12. ✅ Trajectory trails: past N frames of object positions as fading polylines
 13. ✅ Spacebar play/pause with auto-rewind at end
 14. ❌ Segmentation removed (sparse data: 1/9 segments, ~10/199 frames)
-15. ⬜ Street Gaussians training
-16. ⬜ Deploy + LinkedIn post
+15. ✅ Waymo-inspired dark theme + full-screen layout redesign
+16. ✅ Drag & drop folder loading + File System Access API + folder picker
+17. ✅ Keyboard shortcuts (←→, J/L, Shift+←→, Space, ?) + ShortcutHints overlay
+18. ✅ Loading skeleton: 4-step progress + camera strip shimmer + 2 RG pre-loading
+19. ✅ Landing page: intro section + collapsible download guide with copy button
+20. ✅ Segment dropdown with truncated ID + location/time metadata
+21. ✅ README rewrite for public-facing GitHub Pages deployment
+22. ⬜ DriveStudio/OmniRe 3DGS training + .ply export
+23. ⬜ gsplat.js integration for 3DGS BEV tab
+24. ⬜ GitHub Pages deployment + demo GIF + LinkedIn post
+25. ⬜ IEEE VIS 2026 Short Paper (deadline: April 30)
