@@ -100,7 +100,7 @@ export default function CameraFrustums({
     [cameraCalibrations],
   )
 
-  if (calibMap.size === 0) return null
+  if (calibMap.size === 0 || activeCam !== null) return null
 
   return (
     <group>
