@@ -51,15 +51,20 @@ npm test        # Vitest (27 tests)
 ## Key Features (Implemented)
 - Multi-segment support with dropdown selector (auto-discovers segments from waymo_data/)
 - LiDAR point cloud: 5 sensors, ~168K points/frame, turbo colormap, per-sensor toggle/coloring
-- 3D bounding boxes: wireframe or GLB models (car/pedestrian/cyclist), tracking ID rainbow colors
+- 3D bounding boxes: wireframe or GLB models (car/pedestrian/cyclist), class-colored
+- 2D camera bounding boxes: SVG overlay on camera panels, synced with boxMode toggle
+- Cross-modal hover highlight: hover 2D box → highlight linked 3D box (and vice versa) via association data
 - Trajectory trails: past N frames of object positions as fading polylines
-- 5 camera image panels: preloaded JPEG, POV switching, hover↔frustum highlight
+- 5 camera image panels: preloaded JPEG, POV switching (click card), hover border highlight
 - Camera frustum visualization in 3D view with hover sync
 - Timeline: scrubber, play/pause (spacebar), speed control (0.5x–4x), YouTube-style buffer bar
 - Parallel worker pools: 4 lidar workers + 2 camera workers for fast row group decompression
 
 ## Data Components Used
-8 essential: `vehicle_pose`, `lidar_calibration`, `camera_calibration`, `lidar_box`, `camera_box`, `camera_to_lidar_box_association`, `lidar`, `camera_image`
+9 essential: `vehicle_pose`, `lidar_calibration`, `camera_calibration`, `lidar_box`, `camera_box`, `camera_to_lidar_box_association`, `lidar`, `camera_image`, `stats`
+
+## Download Script (`download.sh`)
+Supports two modes: **index-based** (pick specific segments by 0-based index) or **count-based** (first N segments). Set `INDICES="23 114 172 ..."` for specific segments, or comment it out and set `N=15` for sequential download.
 
 ## Current Phase
 Phase 2 — Camera views + 3D perception features complete. Next: 3DGS BEV integration.

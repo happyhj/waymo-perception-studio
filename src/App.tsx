@@ -11,6 +11,9 @@ import { scanDataTransfer, pickAndScanFolder, hasDirectoryPicker } from './utils
 // Segment discovery: fetch available segments from Vite API, auto-load if 1
 // ---------------------------------------------------------------------------
 
+/** Guard against double-invocation from React StrictMode */
+let discoveryStarted = false
+
 function useSegmentDiscovery() {
   const availableSegments = useSceneStore((s) => s.availableSegments)
   const actions = useSceneStore((s) => s.actions)
@@ -18,6 +21,8 @@ function useSegmentDiscovery() {
   useEffect(() => {
     if (!import.meta.env.DEV) return
     if (availableSegments.length > 0) return // already discovered
+    if (discoveryStarted) return
+    discoveryStarted = true
 
     fetch('/api/segments')
       .then((r) => r.json())
@@ -25,12 +30,12 @@ function useSegmentDiscovery() {
         if (segments.length === 0) return
         actions.setAvailableSegments(segments)
 
-        // Auto-load if only 1 segment available
-        if (segments.length === 1) {
-          actions.selectSegment(segments[0])
-        }
+        // Auto-load first segment
+        actions.selectSegment(segments[0])
       })
-      .catch(() => {})
+      .catch(() => {
+        discoveryStarted = false
+      })
   }, [availableSegments.length, actions])
 }
 
@@ -252,10 +257,10 @@ function Header() {
           <option value="">-- select segment --</option>
           {availableSegments.map((seg, i) => {
             const meta = segmentMetas.get(seg)
-            const shortId = seg.slice(0, 16)
+            const shortId = seg.slice(0, 7)
             const label = meta
-              ? `#${i + 1} · ${shortId}… · ${LOCATION_LABELS[meta.location] ?? meta.location} · ${meta.timeOfDay}`
-              : `#${i + 1} · ${shortId}…`
+              ? `#${i + 1} · ${shortId} · ${LOCATION_LABELS[meta.location] ?? meta.location} · ${meta.timeOfDay}`
+              : `#${i + 1} · ${shortId}`
             return <option key={seg} value={seg}>{label}</option>
           })}
         </select>
