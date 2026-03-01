@@ -65,16 +65,24 @@ function PovController({
 
   // Save orbital camera state when entering POV
   useEffect(() => {
-    if (targetCalib && !savedState.current) {
-      // Cancel any ongoing return animation
-      returnTarget.current = null
-      savedState.current = {
-        pos: camera.position.clone(),
-        fov: (camera as THREE.PerspectiveCamera).fov,
-        target: orbitRef.current?.target?.clone() ?? new THREE.Vector3(),
+    if (targetCalib) {
+      // If we were returning to orbital view, save that destination as orbital state
+      // instead — so the user can seamlessly switch between cameras
+      if (returnTarget.current) {
+        savedState.current = returnTarget.current
+        returnTarget.current = null
+        returningRef.current = false
+      }
+      // First POV entry — save current orbital camera state
+      if (!savedState.current) {
+        savedState.current = {
+          pos: camera.position.clone(),
+          fov: (camera as THREE.PerspectiveCamera).fov,
+          target: orbitRef.current?.target?.clone() ?? new THREE.Vector3(),
+        }
       }
     }
-  }, [targetCalib, camera, orbitRef])
+  }, [targetCalib, camera, orbitRef, returningRef])
 
   // Start return animation when leaving POV
   useEffect(() => {
@@ -189,6 +197,7 @@ export default function LidarViewer() {
           up: [0, 0, 1],
         }}
         gl={{ antialias: false }}
+        raycaster={{ params: { Line: { threshold: 0.15 } } }}
         style={{ width: '100%', height: '100%' }}
         onCreated={({ gl }) => {
           gl.setClearColor(colors.bgDeep)

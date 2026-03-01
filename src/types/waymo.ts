@@ -42,6 +42,9 @@ export const BOX_TYPE_COLORS: Record<number, string> = {
   [BoxType.TYPE_CYCLIST]: '#DC143C',    // crimson (nuScenes bicycle)
 }
 
+/** Highlight color for cross-modal 2D↔3D hover (unified for self + linked) */
+export const HIGHLIGHT_COLOR = '#00E5FF'   // bright cyan — stands out against all box type colors
+
 /** Camera image resolution by camera name (Waymo v2.0) */
 export const CAMERA_RESOLUTION: Record<number, { width: number; height: number }> = {
   [CameraName.FRONT]: { width: 1920, height: 1280 },

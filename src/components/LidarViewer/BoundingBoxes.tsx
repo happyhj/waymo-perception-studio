@@ -12,7 +12,7 @@
 import { useMemo, useCallback } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, getObjectTrajectories, hasLaserAssociation } from '../../stores/useSceneStore'
-import { BoxType, BOX_TYPE_COLORS } from '../../types/waymo'
+import { BoxType, BOX_TYPE_COLORS, HIGHLIGHT_COLOR } from '../../types/waymo'
 import { VehicleModel, PedestrianModel, CyclistModel, SignModel } from './ObjectModels'
 import type { ParquetRow } from '../../utils/merge'
 
@@ -68,16 +68,10 @@ function parseBoxes(rows: ParquetRow[]): ParsedBox[] {
 
 const _unitBox = new THREE.BoxGeometry(1, 1, 1)
 const _unitEdges = new THREE.EdgesGeometry(_unitBox)
-const _unitCylinder = new THREE.CylinderGeometry(0.5, 0.5, 1, 12)
-_unitCylinder.rotateX(Math.PI / 2) // Z-up
 
 // ---------------------------------------------------------------------------
 // "box" mode — semi-transparent solid + edge outline
 // ---------------------------------------------------------------------------
-
-/** Highlight colors for cross-modal hover */
-const HIGHLIGHT_SELF = '#FFFF00'   // yellow — the box you're hovering
-const HIGHLIGHT_LINKED = '#00FFAA' // green — linked counterpart
 
 function BoxMesh({ box, highlighted, onHover }: {
   box: ParsedBox
@@ -85,10 +79,8 @@ function BoxMesh({ box, highlighted, onHover }: {
   onHover?: (id: string | null) => void
 }) {
   const baseColor = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
-  const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+  const color = highlighted ? HIGHLIGHT_COLOR : baseColor
   const opacity = highlighted ? 0.5 : 0.25
-  const isPedestrian = box.type === BoxType.TYPE_PEDESTRIAN
-  const geometry = isPedestrian ? _unitCylinder : _unitBox
 
   const handlePointerEnter = useCallback((e: THREE.Event) => {
     if (onHover) {
@@ -108,7 +100,7 @@ function BoxMesh({ box, highlighted, onHover }: {
       onPointerEnter={box.isAssociated ? handlePointerEnter : undefined}
       onPointerLeave={box.isAssociated ? handlePointerLeave : undefined}
     >
-      <mesh scale={[box.sx, box.sy, box.sz]} geometry={geometry}>
+      <mesh scale={[box.sx, box.sy, box.sz]} geometry={_unitBox}>
         <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} />
       </mesh>
       <lineSegments scale={[box.sx, box.sy, box.sz]} geometry={_unitEdges}>
@@ -130,7 +122,7 @@ function ModelMesh({ box, highlighted, onHover }: {
   onHover?: (id: string | null) => void
 }) {
   const baseColor = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
-  const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+  const color = highlighted ? HIGHLIGHT_COLOR : baseColor
   const opacity = highlighted ? 0.8 : MODEL_OPACITY
 
   const handlePointerEnter = useCallback((e: THREE.Event) => {
@@ -166,11 +158,21 @@ function ModelMesh({ box, highlighted, onHover }: {
     <group
       position={[box.cx, box.cy, box.cz]}
       rotation={[0, 0, box.heading]}
-      scale={[box.sx, box.sy, box.sz]}
       onPointerEnter={box.isAssociated ? handlePointerEnter : undefined}
       onPointerLeave={box.isAssociated ? handlePointerLeave : undefined}
     >
-      {model}
+      {/* Invisible box hitarea — consistent with box mode (visible wireframe when highlighted) */}
+      {box.isAssociated && (
+        <mesh scale={[box.sx, box.sy, box.sz]} geometry={_unitBox} visible={false} />
+      )}
+      {highlighted && (
+        <lineSegments scale={[box.sx, box.sy, box.sz]} geometry={_unitEdges}>
+          <lineBasicMaterial color={HIGHLIGHT_COLOR} />
+        </lineSegments>
+      )}
+      <group scale={[box.sx, box.sy, box.sz]}>
+        {model}
+      </group>
     </group>
   )
 }

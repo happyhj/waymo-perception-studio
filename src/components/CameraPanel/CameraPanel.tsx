@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
-import { CameraName, BOX_TYPE_COLORS, BoxType, CAMERA_RESOLUTION } from '../../types/waymo'
+import { CameraName, BOX_TYPE_COLORS, BoxType, CAMERA_RESOLUTION, HIGHLIGHT_COLOR } from '../../types/waymo'
 import type { ParquetRow } from '../../utils/merge'
 import { colors, fonts, radius, shadows } from '../../theme'
 
@@ -111,6 +111,8 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
   const pendingUrlRef = useRef<string | null>(null)
   /** The blob URL currently shown on screen (for cleanup) */
   const activeUrlRef = useRef<string | null>(null)
+  const [hovered, setHovered] = useState(false)
+
   useEffect(() => {
     if (!imageBuffer) return // keep showing the last good image
 
@@ -160,13 +162,13 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
         overflow: 'hidden',
         minWidth: 0,
         cursor: 'pointer',
-        border: active ? `2px solid ${accentColor}` : `2px solid ${colors.borderSubtle}`,
+        border: active ? `2px solid ${accentColor}` : hovered ? '2px solid rgba(255,255,255,0.45)' : `2px solid ${colors.borderSubtle}`,
         boxShadow: active ? `0 0 12px ${accentColor}33` : shadows.card,
         transition: 'border-color 0.2s, box-shadow 0.2s',
       }}
       onClick={() => onTogglePov(cameraName)}
-      onMouseEnter={() => onHover(cameraName)}
-      onMouseLeave={() => onHover(null)}
+      onMouseEnter={() => { setHovered(true); onHover(cameraName) }}
+      onMouseLeave={() => { setHovered(false); onHover(null) }}
     >
       {displayUrl ? (
         <img
@@ -243,10 +245,6 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
 const BBOX_STROKE_WIDTH = 4
 const BBOX_STROKE_WIDTH_HIGHLIGHT = 7
 
-/** Highlight colors matching BoundingBoxes.tsx */
-const HIGHLIGHT_SELF = '#FFFF00'
-const HIGHLIGHT_LINKED = '#00FFAA'
-
 function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: ParquetRow[] }) {
   const res = CAMERA_RESOLUTION[cameraName] ?? { width: 1920, height: 1280 }
   const highlightedCameraBoxIds = useSceneStore((s) => s.highlightedCameraBoxIds)
@@ -264,10 +262,8 @@ function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: Parquet
       const baseColor = BOX_TYPE_COLORS[type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
 
       // Determine highlight state
-      const isSelf = hoveredBoxId === camObjectId
-      const isLinked = highlightedCameraBoxIds.has(camObjectId)
-      const highlighted = isSelf ? 'self' : isLinked ? 'linked' : false
-      const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+      const highlighted = hoveredBoxId === camObjectId || highlightedCameraBoxIds.has(camObjectId)
+      const color = highlighted ? HIGHLIGHT_COLOR : baseColor
       const strokeW = highlighted ? BBOX_STROKE_WIDTH_HIGHLIGHT : BBOX_STROKE_WIDTH
       const strokeOp = highlighted ? 1.0 : 0.85
 
@@ -275,23 +271,24 @@ function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: Parquet
       const hasAssociation = !!camObjectId && (type === BoxType.TYPE_PEDESTRIAN || type === BoxType.TYPE_CYCLIST)
 
       return (
-        <rect
-          key={i}
-          x={cx - w / 2}
-          y={cy - h / 2}
-          width={w}
-          height={h}
-          fill="transparent"
-          stroke={color}
-          strokeWidth={strokeW}
-          strokeOpacity={strokeOp}
-          style={{
-            pointerEvents: hasAssociation ? 'auto' : 'none',
-            cursor: hasAssociation ? 'pointer' : 'default',
-          }}
-          onMouseEnter={hasAssociation ? () => setHoveredBox(camObjectId, 'camera') : undefined}
-          onMouseLeave={hasAssociation ? () => setHoveredBox(null, null) : undefined}
-        />
+        <g key={i}>
+          <rect
+            x={cx - w / 2}
+            y={cy - h / 2}
+            width={w}
+            height={h}
+            fill="transparent"
+            stroke={color}
+            strokeWidth={strokeW}
+            strokeOpacity={strokeOp}
+            style={{
+              pointerEvents: hasAssociation ? 'auto' : 'none',
+              cursor: hasAssociation ? 'pointer' : 'default',
+            }}
+            onMouseEnter={hasAssociation ? () => setHoveredBox(camObjectId, 'camera') : undefined}
+            onMouseLeave={hasAssociation ? () => setHoveredBox(null, null) : undefined}
+          />
+        </g>
       )
     })
   }, [boxes, highlightedCameraBoxIds, hoveredBoxId, setHoveredBox])
