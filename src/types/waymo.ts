@@ -42,6 +42,15 @@ export const BOX_TYPE_COLORS: Record<number, string> = {
   [BoxType.TYPE_CYCLIST]: '#DC143C',    // crimson (nuScenes bicycle)
 }
 
+/** Camera image resolution by camera name (Waymo v2.0) */
+export const CAMERA_RESOLUTION: Record<number, { width: number; height: number }> = {
+  [CameraName.FRONT]: { width: 1920, height: 1280 },
+  [CameraName.FRONT_LEFT]: { width: 1920, height: 1280 },
+  [CameraName.FRONT_RIGHT]: { width: 1920, height: 1280 },
+  [CameraName.SIDE_LEFT]: { width: 1920, height: 886 },
+  [CameraName.SIDE_RIGHT]: { width: 1920, height: 886 },
+}
+
 /** A single LiDAR point */
 export interface LidarPoint {
   x: number

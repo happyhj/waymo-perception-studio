@@ -54,6 +54,8 @@ export interface FrameData {
   /** Per-sensor point clouds for toggle UI (keyed by laser_name: 1=TOP,2=FRONT,3=SIDE_LEFT,4=SIDE_RIGHT,5=REAR) */
   sensorClouds: Map<number, PointCloud>
   boxes: ParquetRow[]
+  /** 2D camera bounding boxes for overlay on camera panels */
+  cameraBoxes: ParquetRow[]
   cameraImages: Map<number, ArrayBuffer>
   vehiclePose: number[] | null
 }
@@ -154,6 +156,7 @@ const internal = {
   /** Reverse lookup: timestamp → frame index */
   timestampToFrame: new Map<bigint, number>(),
   lidarBoxByFrame: new Map<unknown, ParquetRow[]>(),
+  cameraBoxByFrame: new Map<unknown, ParquetRow[]>(),
   vehiclePoseByFrame: new Map<unknown, ParquetRow[]>(),
   /** No eviction needed — row-group loading caches all ~199 frames, which is the goal. */
   frameCache: new Map<number, FrameData>(),
@@ -191,6 +194,7 @@ function resetInternal() {
   internal.timestamps = []
   internal.timestampToFrame.clear()
   internal.lidarBoxByFrame.clear()
+  internal.cameraBoxByFrame.clear()
   internal.vehiclePoseByFrame.clear()
   internal.frameCache.clear()
   internal.cameraImageCache.clear()
@@ -245,6 +249,7 @@ function cacheRowGroupFrames(
     if (internal.frameCache.has(frameIndex)) continue
 
     const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
+    const cameraBoxes = internal.cameraBoxByFrame.get(timestamp) ?? []
     const poseRows = internal.vehiclePoseByFrame.get(timestamp)
     const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
 
@@ -263,6 +268,7 @@ function cacheRowGroupFrames(
       },
       sensorClouds,
       boxes,
+      cameraBoxes,
       cameraImages: new Map(),
       vehiclePose,
     }
@@ -574,7 +580,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       // URL-based path (Vite dev server)
       const components = [
         'vehicle_pose', 'lidar_calibration', 'camera_calibration',
-        'lidar_box', 'lidar', 'camera_image', 'stats',
+        'lidar_box', 'camera_box', 'lidar', 'camera_image', 'stats',
       ]
       const sources = new Map<string, string>()
       for (const comp of components) {
@@ -717,6 +723,7 @@ async function loadFrameMainThread(
   internal.lastConvertMs = performance.now() - ct0
 
   const boxes = internal.lidarBoxByFrame.get(timestamp) ?? []
+  const cameraBoxes = internal.cameraBoxByFrame.get(timestamp) ?? []
   const poseRows = internal.vehiclePoseByFrame.get(timestamp)
   const vehiclePose = (poseRows?.[0]?.['[VehiclePoseComponent].world_from_vehicle.transform'] as number[]) ?? null
 
@@ -725,6 +732,7 @@ async function loadFrameMainThread(
     pointCloud: result.merged,
     sensorClouds: result.perSensor,
     boxes,
+    cameraBoxes,
     cameraImages: new Map(),
     vehiclePose,
   }
@@ -797,6 +805,13 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void, get:
     for (const trail of internal.objectTrajectories.values()) {
       trail.sort((a, b) => a.frameIndex - b.frameIndex)
     }
+  }
+
+  // Camera boxes (2D bounding boxes for camera overlay)
+  const cameraBoxPf = internal.parquetFiles.get('camera_box')
+  if (cameraBoxPf) {
+    const rows = await readAllRows(cameraBoxPf)
+    internal.cameraBoxByFrame = groupIndexBy(rows, 'key.frame_timestamp_micros')
   }
 
   // Stats (segment metadata: time of day, location, weather, object counts)

@@ -59,7 +59,7 @@ npm test        # Vitest (27 tests)
 - Parallel worker pools: 4 lidar workers + 2 camera workers for fast row group decompression
 
 ## Data Components Used
-6 essential: `vehicle_pose`, `lidar_calibration`, `camera_calibration`, `lidar_box`, `lidar`, `camera_image`
+8 essential: `vehicle_pose`, `lidar_calibration`, `camera_calibration`, `lidar_box`, `camera_box`, `camera_to_lidar_box_association`, `lidar`, `camera_image`
 
 ## Current Phase
 Phase 2 — Camera views + 3D perception features complete. Next: 3DGS BEV integration.

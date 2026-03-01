@@ -11,9 +11,10 @@
  * to that camera's perspective.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
-import { CameraName } from '../../types/waymo'
+import { CameraName, BOX_TYPE_COLORS, BoxType, CAMERA_RESOLUTION } from '../../types/waymo'
+import type { ParquetRow } from '../../utils/merge'
 import { colors, fonts, radius, shadows } from '../../theme'
 
 // Camera display order: surround view left-to-right
@@ -38,9 +39,27 @@ const CAMERA_COLORS: Record<number, string> = {
 
 export default function CameraPanel() {
   const cameraImages = useSceneStore((s) => s.currentFrame?.cameraImages)
+  const cameraBoxes = useSceneStore((s) => s.currentFrame?.cameraBoxes)
+  const boxMode = useSceneStore((s) => s.boxMode)
   const activeCam = useSceneStore((s) => s.activeCam)
   const toggleActiveCam = useSceneStore((s) => s.actions.toggleActiveCam)
   const setHoveredCam = useSceneStore((s) => s.actions.setHoveredCam)
+
+  // Group camera boxes by camera name (only when boxMode is not 'off')
+  const boxesByCamera = useMemo(() => {
+    const map = new Map<number, ParquetRow[]>()
+    if (boxMode === 'off' || !cameraBoxes) return map
+    for (const row of cameraBoxes) {
+      const camName = row['key.camera_name'] as number
+      let arr = map.get(camName)
+      if (!arr) {
+        arr = []
+        map.set(camName, arr)
+      }
+      arr.push(row)
+    }
+    return map
+  }, [cameraBoxes, boxMode])
 
   return (
     <div style={{
@@ -59,6 +78,7 @@ export default function CameraPanel() {
           cameraName={id}
           label={label}
           imageBuffer={cameraImages?.get(id) ?? null}
+          boxes={boxesByCamera.get(id) ?? EMPTY_BOXES}
           active={activeCam === id}
           onTogglePov={toggleActiveCam}
           onHover={setHoveredCam}
@@ -68,6 +88,8 @@ export default function CameraPanel() {
   )
 }
 
+const EMPTY_BOXES: ParquetRow[] = []
+
 // ---------------------------------------------------------------------------
 // Single camera view
 // ---------------------------------------------------------------------------
@@ -76,12 +98,13 @@ interface CameraViewProps {
   cameraName: number
   label: string
   imageBuffer: ArrayBuffer | null
+  boxes: ParquetRow[]
   active: boolean
   onTogglePov: (cameraName: number) => void
   onHover: (cameraName: number | null) => void
 }
 
-function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHover }: CameraViewProps) {
+function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov, onHover }: CameraViewProps) {
   /** The URL currently displayed (kept until a new image fully loads) */
   const [displayUrl, setDisplayUrl] = useState<string | null>(null)
   /** The newest blob URL being loaded (may not be visible yet) */
@@ -177,6 +200,11 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
         </div>
       )}
 
+      {/* 2D bounding box overlay */}
+      {boxes.length > 0 && (
+        <BBoxOverlay cameraName={cameraName} boxes={boxes} />
+      )}
+
       {/* POV indicator / hover overlay */}
       {(hovered || active) && (
         <div style={{
@@ -237,5 +265,57 @@ function CameraView({ cameraName, label, imageBuffer, active, onTogglePov, onHov
         }} />
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 2D Bounding Box SVG Overlay
+// ---------------------------------------------------------------------------
+
+/** Stroke width in image-pixel units (scales with the viewBox) */
+const BBOX_STROKE_WIDTH = 4
+
+function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: ParquetRow[] }) {
+  const res = CAMERA_RESOLUTION[cameraName] ?? { width: 1920, height: 1280 }
+
+  const rects = useMemo(() => {
+    return boxes.map((row, i) => {
+      const cx = row['[CameraBoxComponent].box.center.x'] as number
+      const cy = row['[CameraBoxComponent].box.center.y'] as number
+      const w = row['[CameraBoxComponent].box.size.x'] as number
+      const h = row['[CameraBoxComponent].box.size.y'] as number
+      const type = (row['[CameraBoxComponent].type'] as number) ?? 0
+      const color = BOX_TYPE_COLORS[type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+
+      return (
+        <rect
+          key={i}
+          x={cx - w / 2}
+          y={cy - h / 2}
+          width={w}
+          height={h}
+          fill="none"
+          stroke={color}
+          strokeWidth={BBOX_STROKE_WIDTH}
+          strokeOpacity={0.85}
+        />
+      )
+    })
+  }, [boxes])
+
+  return (
+    <svg
+      viewBox={`0 0 ${res.width} ${res.height}`}
+      preserveAspectRatio="xMidYMid slice"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+      }}
+    >
+      {rects}
+    </svg>
   )
 }
