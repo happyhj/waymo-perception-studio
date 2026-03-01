@@ -25,6 +25,51 @@ Timeline: 4–5 days.
 - **Trained model weights (.ply)**: Distributable (non-commercial). Pre-built 3DGS .ply bundled with app.
 - Result: 3DGS Lab = zero-download demo. Sensor View = user provides data.
 
+### World Coordinate Mode — Frame-0-Relative Normalization
+
+**Decision**: World mode transforms all poses to be relative to frame 0's position, rather than using raw global (UTM-like) coordinates.
+
+**Problem**: Waymo `world_from_vehicle` transform uses global coordinates (likely UTM). First frame of a typical segment is at (-865, 15064, 8) — ~15km from origin. Three.js camera/grid sit at origin, so toggling world mode shows nothing.
+
+**Solution**: At load time, compute `inv(pose₀)` and store it. Every pose becomes `inv(pose₀) × poseₙ`, making frame 0 = identity = origin. This keeps the grid visible, avoids float precision issues at large coordinates, and makes trajectory trails intuitive.
+
+**Math**: Row-major 4×4 rigid-body inverse uses `[R^T | -R^T·t]` (no general matrix inverse needed since rotation matrices are orthogonal). Composition via standard row-major 4×4 multiply.
+
+**Camera behavior**: In world mode, camera stays at initial position (no vehicle-following). This lets the user see the full trajectory path. Vehicle frame mode retains the default orbital camera around the vehicle.
+
+### Test Fixtures — Mock Parquet Files
+
+**Decision**: Generate deterministic mock Parquet fixtures with pyarrow instead of using real Waymo data in tests.
+
+**Why not real data**: Waymo data files are 50MB–328MB each, cannot be checked into git (license + size). Tests that depend on external data downloads are fragile and non-portable.
+
+**Approach**: `scripts/generate_fixtures.py` uses pyarrow + numpy with `seed(42)` to generate 5 small Parquet files (~5.5MB total) in `src/__fixtures__/mock_segment_0000/`. Range images are deliberately small (TOP: 8×100, FRONT: 8×50, SIDE/REAR: 4×20) to keep fixtures git-friendly while exercising the full conversion pipeline.
+
+**Mock data properties**:
+- 199 frames matching real segment structure
+- 5 LiDAR sensors with realistic calibration (non-uniform inclinations, per-sensor extrinsics)
+- 75 tracked objects per frame with bounding boxes
+- ~1,266 valid points per frame (~88% density, matching Waymo's typical valid-pixel ratio)
+- ZSTD compression, 5 row groups
+
+### Worker Pool Mocking for Vitest
+
+**Decision**: Mock `WorkerPool` and `CameraWorkerPool` via `vi.mock` with in-process implementations, rather than using `@vitest/web-worker` or other Worker polyfills.
+
+**Why not `@vitest/web-worker`**: The worker files import complex modules (hyparquet, BROTLI compressors, range image conversion). `@vitest/web-worker` creates a real worker thread but module resolution hangs for 30s+ because Vite's transform pipeline doesn't apply in vitest workers.
+
+**Solution**: The mock `WorkerPool.init()` opens the Parquet file via the same `openParquetFile()` function used in production. `requestRowGroup()` reads rows and runs `convertAllSensors()` — identical logic to the real worker, just synchronous in the main thread. This validates the full data pipeline (Parquet → range image → xyz conversion) without needing actual Web Workers.
+
+**CameraWorkerPool** is mocked as a no-op (returns 0 row groups) since camera image fixtures are not included.
+
+### GPU Shader — Azimuth Correction Fix
+
+**Decision**: Add per-sensor azimuth correction (`atan2(extrinsic[4], extrinsic[0])`) to the WebGPU compute shader's `computeAzimuths` call.
+
+**Bug**: The GPU path called `computeAzimuths(width)` without the azimuth correction parameter, while the CPU path correctly computed `azCorrection = atan2(extrinsic[1][0], extrinsic[0][0])`. This caused the GPU shader to produce xyz positions rotated by the sensor's yaw angle, leading to incorrect bounding boxes. The bug was masked in production because the GPU path was optional and only used for performance.
+
+**Discovery**: The mock fixture tests exposed this because they run both CPU and GPU paths against the same small data. With real Waymo data, the TOP sensor has near-zero yaw so the error was subtle; the FRONT/SIDE sensors have larger yaw angles where the mismatch is obvious.
+
 ## 2. Waymo v2.0 Data Structure
 
 Files: `{component}/{segment_id}.parquet`
@@ -769,7 +814,10 @@ Chronological record of technical decisions and the reasoning behind them.
 21. ✅ README rewrite for public-facing GitHub Pages deployment
 22. ✅ LiDAR colormap modes (intensity/height/range/elongation) + unified frosted control panel
 23. ✅ POV gimbal lock fix (quaternion slerp) + frustum base/edge split display
-24. ⬜ DriveStudio/OmniRe 3DGS training + .ply export
-23. ⬜ gsplat.js integration for 3DGS BEV tab
-24. ⬜ GitHub Pages deployment + demo GIF + LinkedIn post
-25. ⬜ IEEE VIS 2026 Short Paper (deadline: April 30)
+24. ✅ World coordinate mode + frame-0-relative normalization
+25. ✅ Mock parquet test fixtures + Worker mock for vitest
+26. ✅ GPU azimuth correction bug fix
+27. ⬜ DriveStudio/OmniRe 3DGS training + .ply export
+28. ⬜ gsplat.js integration for 3DGS BEV tab
+29. ⬜ GitHub Pages deployment + demo GIF + LinkedIn post
+30. ⬜ IEEE VIS 2026 Short Paper (deadline: April 30)
