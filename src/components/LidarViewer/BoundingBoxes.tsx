@@ -9,9 +9,9 @@
  * Waymo coordinate frame: X=forward, Y=left, Z=up.
  */
 
-import { useMemo } from 'react'
+import { useMemo, useCallback } from 'react'
 import * as THREE from 'three'
-import { useSceneStore, getObjectTrajectories } from '../../stores/useSceneStore'
+import { useSceneStore, getObjectTrajectories, hasLaserAssociation } from '../../stores/useSceneStore'
 import { BoxType, BOX_TYPE_COLORS } from '../../types/waymo'
 import { VehicleModel, PedestrianModel, CyclistModel, SignModel } from './ObjectModels'
 import type { ParquetRow } from '../../utils/merge'
@@ -30,6 +30,8 @@ interface ParsedBox {
   heading: number
   type: number
   id: string
+  /** Whether this box has a camera↔lidar association (pedestrian/cyclist only) */
+  isAssociated: boolean
 }
 
 function parseBoxes(rows: ParquetRow[]): ParsedBox[] {
@@ -54,6 +56,7 @@ function parseBoxes(rows: ParquetRow[]): ParsedBox[] {
       heading: heading ?? 0,
       type: type ?? BoxType.TYPE_UNKNOWN,
       id,
+      isAssociated: id ? hasLaserAssociation(id) : false,
     })
   }
   return result
@@ -72,18 +75,41 @@ _unitCylinder.rotateX(Math.PI / 2) // Z-up
 // "box" mode — semi-transparent solid + edge outline
 // ---------------------------------------------------------------------------
 
-function BoxMesh({ box }: { box: ParsedBox }) {
-  const color = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+/** Highlight colors for cross-modal hover */
+const HIGHLIGHT_SELF = '#FFFF00'   // yellow — the box you're hovering
+const HIGHLIGHT_LINKED = '#00FFAA' // green — linked counterpart
+
+function BoxMesh({ box, highlighted, onHover }: {
+  box: ParsedBox
+  highlighted: 'self' | 'linked' | false
+  onHover?: (id: string | null) => void
+}) {
+  const baseColor = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+  const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+  const opacity = highlighted ? 0.5 : 0.25
   const isPedestrian = box.type === BoxType.TYPE_PEDESTRIAN
   const geometry = isPedestrian ? _unitCylinder : _unitBox
+
+  const handlePointerEnter = useCallback((e: THREE.Event) => {
+    if (onHover) {
+      (e as unknown as { stopPropagation: () => void }).stopPropagation()
+      onHover(box.id)
+    }
+  }, [onHover, box.id])
+
+  const handlePointerLeave = useCallback(() => {
+    if (onHover) onHover(null)
+  }, [onHover])
 
   return (
     <group
       position={[box.cx, box.cy, box.cz]}
       rotation={[0, 0, box.heading]}
+      onPointerEnter={box.isAssociated ? handlePointerEnter : undefined}
+      onPointerLeave={box.isAssociated ? handlePointerLeave : undefined}
     >
       <mesh scale={[box.sx, box.sy, box.sz]} geometry={geometry}>
-        <meshBasicMaterial color={color} transparent opacity={0.25} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} />
       </mesh>
       <lineSegments scale={[box.sx, box.sy, box.sz]} geometry={_unitEdges}>
         <lineBasicMaterial color={color} />
@@ -98,25 +124,42 @@ function BoxMesh({ box }: { box: ParsedBox }) {
 
 const MODEL_OPACITY = 0.55
 
-function ModelMesh({ box }: { box: ParsedBox }) {
-  const color = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+function ModelMesh({ box, highlighted, onHover }: {
+  box: ParsedBox
+  highlighted: 'self' | 'linked' | false
+  onHover?: (id: string | null) => void
+}) {
+  const baseColor = BOX_TYPE_COLORS[box.type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+  const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+  const opacity = highlighted ? 0.8 : MODEL_OPACITY
+
+  const handlePointerEnter = useCallback((e: THREE.Event) => {
+    if (onHover) {
+      (e as unknown as { stopPropagation: () => void }).stopPropagation()
+      onHover(box.id)
+    }
+  }, [onHover, box.id])
+
+  const handlePointerLeave = useCallback(() => {
+    if (onHover) onHover(null)
+  }, [onHover])
 
   let model: React.ReactNode
   switch (box.type) {
     case BoxType.TYPE_VEHICLE:
-      model = <VehicleModel color={color} opacity={MODEL_OPACITY} />
+      model = <VehicleModel color={color} opacity={opacity} />
       break
     case BoxType.TYPE_PEDESTRIAN:
-      model = <PedestrianModel color={color} opacity={MODEL_OPACITY} />
+      model = <PedestrianModel color={color} opacity={opacity} />
       break
     case BoxType.TYPE_CYCLIST:
-      model = <CyclistModel color={color} opacity={MODEL_OPACITY} />
+      model = <CyclistModel color={color} opacity={opacity} />
       break
     case BoxType.TYPE_SIGN:
-      model = <SignModel color={color} opacity={MODEL_OPACITY} />
+      model = <SignModel color={color} opacity={opacity} />
       break
     default:
-      model = <VehicleModel color={color} opacity={MODEL_OPACITY} />
+      model = <VehicleModel color={color} opacity={opacity} />
   }
 
   return (
@@ -124,6 +167,8 @@ function ModelMesh({ box }: { box: ParsedBox }) {
       position={[box.cx, box.cy, box.cz]}
       rotation={[0, 0, box.heading]}
       scale={[box.sx, box.sy, box.sz]}
+      onPointerEnter={box.isAssociated ? handlePointerEnter : undefined}
+      onPointerLeave={box.isAssociated ? handlePointerLeave : undefined}
     >
       {model}
     </group>
@@ -187,6 +232,13 @@ export default function BoundingBoxes() {
   const boxRows = useSceneStore((s) => s.currentFrame?.boxes)
   const currentFrameIndex = useSceneStore((s) => s.currentFrameIndex)
   const trailLength = useSceneStore((s) => s.trailLength)
+  const hoveredBoxId = useSceneStore((s) => s.hoveredBoxId)
+  const highlightedLaserBoxId = useSceneStore((s) => s.highlightedLaserBoxId)
+  const setHoveredBox = useSceneStore((s) => s.actions.setHoveredBox)
+
+  const handleHover = useCallback((id: string | null) => {
+    setHoveredBox(id, id ? 'laser' : null)
+  }, [setHoveredBox])
 
   const parsed = useMemo(() => {
     if (!boxRows || boxRows.length === 0) return []
@@ -199,9 +251,23 @@ export default function BoundingBoxes() {
 
   return (
     <>
-      {parsed.map((box, i) => (
-        <Renderer key={i} box={box} />
-      ))}
+      {parsed.map((box, i) => {
+        // Determine highlight state: 'self' if directly hovered from 3D,
+        // 'linked' if highlighted via 2D camera hover
+        const highlighted: 'self' | 'linked' | false =
+          hoveredBoxId === box.id ? 'self'
+          : highlightedLaserBoxId === box.id ? 'linked'
+          : false
+
+        return (
+          <Renderer
+            key={i}
+            box={box}
+            highlighted={highlighted}
+            onHover={box.isAssociated ? handleHover : undefined}
+          />
+        )
+      })}
       {trailLength > 0 && parsed.map((box) =>
         box.id ? (
           <TrajectoryTrail

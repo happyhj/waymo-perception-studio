@@ -11,7 +11,7 @@
  * to that camera's perspective.
  */
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { CameraName, BOX_TYPE_COLORS, BoxType, CAMERA_RESOLUTION } from '../../types/waymo'
 import type { ParquetRow } from '../../utils/merge'
@@ -111,8 +111,6 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
   const pendingUrlRef = useRef<string | null>(null)
   /** The blob URL currently shown on screen (for cleanup) */
   const activeUrlRef = useRef<string | null>(null)
-  const [hovered, setHovered] = useState(false)
-
   useEffect(() => {
     if (!imageBuffer) return // keep showing the last good image
 
@@ -147,10 +145,6 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
     }
   }, [imageBuffer])
 
-  const handleClick = useCallback(() => {
-    onTogglePov(cameraName)
-  }, [onTogglePov, cameraName])
-
   // FRONT camera gets slightly more space
   const isFront = cameraName === CameraName.FRONT
   const flex = isFront ? 1.3 : 1
@@ -170,9 +164,9 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
         boxShadow: active ? `0 0 12px ${accentColor}33` : shadows.card,
         transition: 'border-color 0.2s, box-shadow 0.2s',
       }}
-      onClick={handleClick}
-      onMouseEnter={() => { setHovered(true); onHover(cameraName) }}
-      onMouseLeave={() => { setHovered(false); onHover(null) }}
+      onClick={() => onTogglePov(cameraName)}
+      onMouseEnter={() => onHover(cameraName)}
+      onMouseLeave={() => onHover(null)}
     >
       {displayUrl ? (
         <img
@@ -203,33 +197,6 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
       {/* 2D bounding box overlay */}
       {boxes.length > 0 && (
         <BBoxOverlay cameraName={cameraName} boxes={boxes} />
-      )}
-
-      {/* POV indicator / hover overlay */}
-      {(hovered || active) && (
-        <div style={{
-          position: 'absolute',
-          inset: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: active ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.4)',
-          transition: 'background-color 0.15s',
-        }}>
-          <span style={{
-            fontSize: '11px',
-            fontFamily: fonts.sans,
-            fontWeight: 600,
-            color: active ? accentColor : '#fff',
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            padding: '4px 12px',
-            borderRadius: radius.sm,
-            letterSpacing: '0.5px',
-            backdropFilter: 'blur(4px)',
-          }}>
-            {active ? 'EXIT POV' : 'POV'}
-          </span>
-        </div>
       )}
 
       {/* Label overlay */}
@@ -274,9 +241,17 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
 
 /** Stroke width in image-pixel units (scales with the viewBox) */
 const BBOX_STROKE_WIDTH = 4
+const BBOX_STROKE_WIDTH_HIGHLIGHT = 7
+
+/** Highlight colors matching BoundingBoxes.tsx */
+const HIGHLIGHT_SELF = '#FFFF00'
+const HIGHLIGHT_LINKED = '#00FFAA'
 
 function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: ParquetRow[] }) {
   const res = CAMERA_RESOLUTION[cameraName] ?? { width: 1920, height: 1280 }
+  const highlightedCameraBoxIds = useSceneStore((s) => s.highlightedCameraBoxIds)
+  const hoveredBoxId = useSceneStore((s) => s.hoveredBoxId)
+  const setHoveredBox = useSceneStore((s) => s.actions.setHoveredBox)
 
   const rects = useMemo(() => {
     return boxes.map((row, i) => {
@@ -285,7 +260,19 @@ function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: Parquet
       const w = row['[CameraBoxComponent].box.size.x'] as number
       const h = row['[CameraBoxComponent].box.size.y'] as number
       const type = (row['[CameraBoxComponent].type'] as number) ?? 0
-      const color = BOX_TYPE_COLORS[type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+      const camObjectId = (row['key.camera_object_id'] as string) ?? ''
+      const baseColor = BOX_TYPE_COLORS[type] ?? BOX_TYPE_COLORS[BoxType.TYPE_UNKNOWN]
+
+      // Determine highlight state
+      const isSelf = hoveredBoxId === camObjectId
+      const isLinked = highlightedCameraBoxIds.has(camObjectId)
+      const highlighted = isSelf ? 'self' : isLinked ? 'linked' : false
+      const color = highlighted === 'self' ? HIGHLIGHT_SELF : highlighted === 'linked' ? HIGHLIGHT_LINKED : baseColor
+      const strokeW = highlighted ? BBOX_STROKE_WIDTH_HIGHLIGHT : BBOX_STROKE_WIDTH
+      const strokeOp = highlighted ? 1.0 : 0.85
+
+      // Only pedestrian/cyclist have associations → only they are interactive
+      const hasAssociation = !!camObjectId && (type === BoxType.TYPE_PEDESTRIAN || type === BoxType.TYPE_CYCLIST)
 
       return (
         <rect
@@ -294,14 +281,20 @@ function BBoxOverlay({ cameraName, boxes }: { cameraName: number; boxes: Parquet
           y={cy - h / 2}
           width={w}
           height={h}
-          fill="none"
+          fill="transparent"
           stroke={color}
-          strokeWidth={BBOX_STROKE_WIDTH}
-          strokeOpacity={0.85}
+          strokeWidth={strokeW}
+          strokeOpacity={strokeOp}
+          style={{
+            pointerEvents: hasAssociation ? 'auto' : 'none',
+            cursor: hasAssociation ? 'pointer' : 'default',
+          }}
+          onMouseEnter={hasAssociation ? () => setHoveredBox(camObjectId, 'camera') : undefined}
+          onMouseLeave={hasAssociation ? () => setHoveredBox(null, null) : undefined}
         />
       )
     })
-  }, [boxes])
+  }, [boxes, highlightedCameraBoxIds, hoveredBoxId, setHoveredBox])
 
   return (
     <svg

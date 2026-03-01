@@ -78,6 +78,8 @@ interface SceneActions {
   setActiveCam: (cam: number | null) => void
   toggleActiveCam: (cam: number) => void
   setHoveredCam: (cam: number | null) => void
+  /** Set hovered box for cross-modal 2D↔3D highlight (association-linked boxes only) */
+  setHoveredBox: (id: string | null, source: 'laser' | 'camera' | null) => void
   setAvailableSegments: (segments: string[]) => void
   selectSegment: (segmentId: string) => Promise<void>
   loadFromFiles: (segments: Map<string, Map<string, File>>) => Promise<void>
@@ -133,6 +135,12 @@ export interface SceneState {
   activeCam: number | null
   /** Camera being hovered in CameraPanel (for frustum highlight) */
   hoveredCam: number | null
+  /** Currently hovered box ID (laser_object_id or camera_object_id) */
+  hoveredBoxId: string | null
+  /** Camera box IDs to highlight (derived from hovering a 3D box) */
+  highlightedCameraBoxIds: Set<string>
+  /** Laser box ID to highlight (derived from hovering a 2D box) */
+  highlightedLaserBoxId: string | null
   /** All discovered segment IDs */
   availableSegments: string[]
   /** Segment metadata from stats component (segmentId → SegmentMeta) */
@@ -183,6 +191,10 @@ const internal = {
   lidarFrameIndex: null as FrameRowIndex | null,
   /** Object trajectory index: objectId → sorted array of {frameIndex, x, y, z, type} */
   objectTrajectories: new Map<string, { frameIndex: number; x: number; y: number; z: number; type: number }[]>(),
+  /** Association lookup: camera_object_id → laser_object_id */
+  assocCamToLaser: new Map<string, string>(),
+  /** Association lookup: laser_object_id → Set<camera_object_id> */
+  assocLaserToCams: new Map<string, Set<string>>(),
   /** File-based segments from drag & drop (segmentId → component → File) */
   filesBySegment: null as Map<string, Map<string, File>> | null,
   /** Blob URLs created for workers — revoke on reset to free memory */
@@ -199,6 +211,8 @@ function resetInternal() {
   internal.frameCache.clear()
   internal.cameraImageCache.clear()
   internal.objectTrajectories.clear()
+  internal.assocCamToLaser.clear()
+  internal.assocLaserToCams.clear()
   internal.loadedRowGroups.clear()
   internal.prefetchStarted = false
   if (internal.playIntervalId !== null) {
@@ -334,6 +348,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   hasBoxData: false,
   activeCam: null,
   hoveredCam: null,
+  hoveredBoxId: null,
+  highlightedCameraBoxIds: new Set<string>(),
+  highlightedLaserBoxId: null,
   availableSegments: [],
   segmentMetas: new Map(),
   currentSegment: null,
@@ -557,6 +574,38 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       set({ hoveredCam: cam })
     },
 
+    setHoveredBox: (id: string | null, source: 'laser' | 'camera' | null) => {
+      if (!id || !source) {
+        // Clear all highlights
+        set({
+          hoveredBoxId: null,
+          highlightedCameraBoxIds: new Set<string>(),
+          highlightedLaserBoxId: null,
+        })
+        return
+      }
+
+      if (source === 'laser') {
+        // Hovering a 3D box → find linked 2D camera box IDs
+        const camIds = internal.assocLaserToCams.get(id)
+        set({
+          hoveredBoxId: id,
+          highlightedCameraBoxIds: camIds ? new Set(camIds) : new Set<string>(),
+          highlightedLaserBoxId: null,
+        })
+      } else {
+        // Hovering a 2D camera box → find linked 3D laser box ID
+        const laserId = internal.assocCamToLaser.get(id)
+        // Also find all sibling camera boxes linked to the same laser box
+        const siblingCamIds = laserId ? internal.assocLaserToCams.get(laserId) : undefined
+        set({
+          hoveredBoxId: id,
+          highlightedCameraBoxIds: siblingCamIds ? new Set(siblingCamIds) : new Set<string>(),
+          highlightedLaserBoxId: laserId ?? null,
+        })
+      }
+    },
+
     setAvailableSegments: (segments: string[]) => {
       set({ availableSegments: segments })
     },
@@ -580,7 +629,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       // URL-based path (Vite dev server)
       const components = [
         'vehicle_pose', 'lidar_calibration', 'camera_calibration',
-        'lidar_box', 'camera_box', 'lidar', 'camera_image', 'stats',
+        'lidar_box', 'camera_box', 'camera_to_lidar_box_association',
+        'lidar', 'camera_image', 'stats',
       ]
       const sources = new Map<string, string>()
       for (const comp of components) {
@@ -629,6 +679,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         hasBoxData: false,
         activeCam: null,
         hoveredCam: null,
+        hoveredBoxId: null,
+        highlightedCameraBoxIds: new Set<string>(),
+        highlightedLaserBoxId: null,
       })
     },
   },
@@ -814,6 +867,29 @@ async function loadStartupData(set: (partial: Partial<SceneState>) => void, get:
     internal.cameraBoxByFrame = groupIndexBy(rows, 'key.frame_timestamp_micros')
   }
 
+  // Camera-to-LiDAR box association (links 2D camera boxes ↔ 3D laser boxes)
+  const assocPf = internal.parquetFiles.get('camera_to_lidar_box_association')
+  if (assocPf) {
+    const rows = await readAllRows(assocPf, [
+      'key.camera_object_id',
+      'key.laser_object_id',
+    ])
+    internal.assocCamToLaser.clear()
+    internal.assocLaserToCams.clear()
+    for (const row of rows) {
+      const camId = row['key.camera_object_id'] as string | undefined
+      const laserId = row['key.laser_object_id'] as string | undefined
+      if (!camId || !laserId) continue
+      internal.assocCamToLaser.set(camId, laserId)
+      let camSet = internal.assocLaserToCams.get(laserId)
+      if (!camSet) {
+        camSet = new Set()
+        internal.assocLaserToCams.set(laserId, camSet)
+      }
+      camSet.add(camId)
+    }
+  }
+
   // Stats (segment metadata: time of day, location, weather, object counts)
   const statsPf = internal.parquetFiles.get('stats')
   if (statsPf) {
@@ -990,4 +1066,9 @@ async function prefetchAllRowGroups(
 
 export function getObjectTrajectories() {
   return internal.objectTrajectories
+}
+
+/** Check if a laser_object_id has any camera box association */
+export function hasLaserAssociation(laserObjectId: string): boolean {
+  return internal.assocLaserToCams.has(laserObjectId)
 }
