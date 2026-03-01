@@ -49,6 +49,13 @@ const OPTICAL_TO_THREEJS_CAM = new THREE.Quaternion().setFromAxisAngle(
 /** Distance threshold to consider the return animation "done" */
 const SNAP_THRESHOLD = 0.05
 
+/** Reusable temp objects for PovController world-mode transform (avoids allocation in useFrame) */
+const _povPoseMat = new THREE.Matrix4()
+const _povWorldPos = new THREE.Vector3()
+const _povPoseQuat = new THREE.Quaternion()
+const _povWorldQuat = new THREE.Quaternion()
+const _povVehicleQuat = new THREE.Quaternion()
+
 function PovController({
   targetCalib,
   orbitRef,
@@ -106,10 +113,26 @@ function PovController({
 
     if (targetCalib) {
       // ---- Entering / holding POV ----
-      camera.position.lerp(targetCalib.position, LERP_SPEED)
+      // Calibration position/quaternion are in vehicle frame.
+      // In world mode, transform them to world frame so the camera
+      // matches the scene group's world-transformed frustum position.
+      _povVehicleQuat.copy(targetCalib.quaternion).multiply(OPTICAL_TO_THREEJS_CAM)
 
-      const povQuat = targetCalib.quaternion.clone().multiply(OPTICAL_TO_THREEJS_CAM)
-      camera.quaternion.slerp(povQuat, LERP_SPEED)
+      const { worldMode, currentFrame } = useSceneStore.getState()
+      const pose = currentFrame?.vehiclePose ?? null
+
+      if (worldMode && pose) {
+        _povPoseMat.fromArray(pose).transpose()
+        _povWorldPos.copy(targetCalib.position).applyMatrix4(_povPoseMat)
+        _povPoseQuat.setFromRotationMatrix(_povPoseMat)
+        _povWorldQuat.copy(_povVehicleQuat).premultiply(_povPoseQuat)
+
+        camera.position.lerp(_povWorldPos, LERP_SPEED)
+        camera.quaternion.slerp(_povWorldQuat, LERP_SPEED)
+      } else {
+        camera.position.lerp(targetCalib.position, LERP_SPEED)
+        camera.quaternion.slerp(_povVehicleQuat, LERP_SPEED)
+      }
 
       const targetFov = THREE.MathUtils.radToDeg(targetCalib.vFov)
       pc.fov = THREE.MathUtils.lerp(pc.fov, targetFov, LERP_SPEED)
