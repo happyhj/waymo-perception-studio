@@ -17,6 +17,7 @@ import {
   convertRangeImageToPointCloud,
   convertAllSensors,
   parseLidarCalibration,
+  POINT_STRIDE,
   type LidarCalibration,
   type RangeImage,
 } from '../rangeImage'
@@ -180,7 +181,7 @@ describe('convertRangeImageToPointCloud()', () => {
     // TOP has 169600 pixels, ~88% valid → ~149K points
     expect(cloud.pointCount).toBeGreaterThan(100000)
     expect(cloud.pointCount).toBeLessThan(170000)
-    expect(cloud.positions.length).toBe(cloud.pointCount * 4)
+    expect(cloud.positions.length).toBe(cloud.pointCount * POINT_STRIDE)
   })
 
   it('converts FRONT lidar with reasonable point count', () => {
@@ -195,9 +196,9 @@ describe('convertRangeImageToPointCloud()', () => {
     // Sample some points — should be within ~75m (max range we saw)
     let maxDist = 0
     for (let i = 0; i < Math.min(cloud.pointCount, 1000); i++) {
-      const x = cloud.positions[i * 4]
-      const y = cloud.positions[i * 4 + 1]
-      const z = cloud.positions[i * 4 + 2]
+      const x = cloud.positions[i * POINT_STRIDE]
+      const y = cloud.positions[i * POINT_STRIDE + 1]
+      const z = cloud.positions[i * POINT_STRIDE + 2]
       const dist = Math.sqrt(x * x + y * y + z * z)
       if (dist > maxDist) maxDist = dist
     }
@@ -212,7 +213,7 @@ describe('convertRangeImageToPointCloud()', () => {
 
     let minZ = Infinity, maxZ = -Infinity
     for (let i = 0; i < cloud.pointCount; i++) {
-      const z = cloud.positions[i * 4 + 2]
+      const z = cloud.positions[i * POINT_STRIDE + 2]
       if (z < minZ) minZ = z
       if (z > maxZ) maxZ = z
     }
@@ -230,7 +231,7 @@ describe('convertRangeImageToPointCloud()', () => {
     // At least some points should have non-zero intensity
     let hasNonZeroIntensity = false
     for (let i = 0; i < Math.min(cloud.pointCount, 100); i++) {
-      if (cloud.positions[i * 4 + 3] > 0) {
+      if (cloud.positions[i * POINT_STRIDE + 3] > 0) {
         hasNonZeroIntensity = true
         break
       }
@@ -277,7 +278,7 @@ describe('convertAllSensors()', () => {
 
     // Sum of all valid points across 5 sensors
     expect(cloud.pointCount).toBeGreaterThan(150000)
-    expect(cloud.positions.length).toBe(cloud.pointCount * 4)
+    expect(cloud.positions.length).toBe(cloud.pointCount * POINT_STRIDE)
   })
 
   it('merged cloud has more points than any single sensor', () => {

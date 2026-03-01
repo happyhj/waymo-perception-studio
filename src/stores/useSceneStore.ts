@@ -48,6 +48,7 @@ import type { SegmentMeta } from '../types/waymo'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type BoxMode = 'off' | 'box' | 'model'
+export type ColormapMode = 'intensity' | 'height' | 'range' | 'elongation'
 export interface FrameData {
   timestamp: bigint
   pointCloud: PointCloud | null
@@ -75,6 +76,7 @@ interface SceneActions {
   setBoxMode: (mode: BoxMode) => void
   setTrailLength: (len: number) => void
   setPointOpacity: (opacity: number) => void
+  setColormapMode: (mode: ColormapMode) => void
   setActiveCam: (cam: number | null) => void
   toggleActiveCam: (cam: number) => void
   setHoveredCam: (cam: number | null) => void
@@ -129,6 +131,8 @@ export interface SceneState {
   trailLength: number
   /** Point cloud opacity (0..1) */
   pointOpacity: number
+  /** Point cloud colormap mode */
+  colormapMode: ColormapMode
   /** Whether lidar_box data is available (false for test set) */
   hasBoxData: boolean
   /** Active camera for POV mode (null = orbital view) */
@@ -345,6 +349,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   boxMode: 'box' as BoxMode,
   trailLength: 10,
   pointOpacity: 0.85,
+  colormapMode: 'intensity' as ColormapMode,
   hasBoxData: false,
   activeCam: null,
   hoveredCam: null,
@@ -564,6 +569,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     setPointOpacity: (opacity: number) => {
       set({ pointOpacity: Math.max(0.1, Math.min(1, opacity)) })
     },
+    setColormapMode: (mode: ColormapMode) => {
+      set({ colormapMode: mode })
+    },
     setActiveCam: (cam: number | null) => {
       set({ activeCam: cam })
     },
@@ -676,6 +684,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         boxMode: 'box' as BoxMode,
         trailLength: 10,
         pointOpacity: 0.85,
+        colormapMode: 'intensity' as ColormapMode,
         hasBoxData: false,
         activeCam: null,
         hoveredCam: null,

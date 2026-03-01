@@ -19,6 +19,7 @@ import CameraFrustums from './CameraFrustums'
 import { useSceneStore } from '../../stores/useSceneStore'
 import { parseCameraCalibrations, type CameraCalib } from '../../utils/cameraCalibration'
 import { BOX_TYPE_COLORS, BoxType } from '../../types/waymo'
+import type { ColormapMode } from '../../stores/useSceneStore'
 import { colors, fonts, radius } from '../../theme'
 
 const SENSOR_INFO: { id: number; label: string; color: string }[] = [
@@ -163,6 +164,8 @@ export default function LidarViewer() {
   const setTrailLength = useSceneStore((s) => s.actions.setTrailLength)
   const pointOpacity = useSceneStore((s) => s.pointOpacity)
   const setPointOpacity = useSceneStore((s) => s.actions.setPointOpacity)
+  const colormapMode = useSceneStore((s) => s.colormapMode)
+  const setColormapMode = useSceneStore((s) => s.actions.setColormapMode)
   const hasBoxData = useSceneStore((s) => s.hasBoxData)
   const cameraCalibrations = useSceneStore((s) => s.cameraCalibrations)
   const activeCam = useSceneStore((s) => s.activeCam)
@@ -349,6 +352,52 @@ export default function LidarViewer() {
           }}>
             {Math.round(pointOpacity * 100)}%
           </span>
+        </div>
+
+        {/* ── COLORMAP group ── */}
+        <div style={{
+          fontSize: '9px',
+          fontFamily: fonts.sans,
+          fontWeight: 600,
+          color: colors.textDim,
+          letterSpacing: '1.2px',
+          textTransform: 'uppercase',
+          padding: '8px 10px 3px',
+        }}>
+          Colormap
+        </div>
+
+        <div style={{
+          display: 'flex',
+          borderRadius: radius.sm,
+          overflow: 'hidden',
+          backgroundColor: 'rgba(26, 31, 53, 0.7)',
+          backdropFilter: 'blur(8px)',
+        }}>
+          {([['intensity', 'Int'], ['height', 'Z'], ['range', 'Range'], ['elongation', 'Elong']] as [ColormapMode, string][]).map(([mode, label]) => {
+            const active = colormapMode === mode
+            return (
+              <button
+                key={mode}
+                onClick={() => setColormapMode(mode)}
+                style={{
+                  flex: 1,
+                  padding: '4px 0',
+                  fontSize: '10px',
+                  fontFamily: fonts.sans,
+                  fontWeight: active ? 600 : 400,
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: active ? 'rgba(0, 200, 219, 0.2)' : 'transparent',
+                  color: active ? colors.accentBlue : colors.textDim,
+                  transition: 'all 0.15s',
+                  letterSpacing: '0.3px',
+                }}
+              >
+                {label}
+              </button>
+            )
+          })}
         </div>
 
         {/* ── Divider + PERCEPTION group (hidden when no box data, e.g. test set) ── */}

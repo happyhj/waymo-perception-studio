@@ -114,43 +114,68 @@ export function parseCameraCalibrations(rows: ParquetRow[]): Map<number, CameraC
 }
 
 /**
- * Build a frustum wireframe geometry for a given camera.
- * Returns line positions for the pyramid edges.
- *
- * The frustum is in camera local space (Z=forward), and should be
- * placed using the camera's position + quaternion from extrinsic.
- *
- * Waymo camera frame: X=right, Y=down, Z=forward
+ * Compute far plane corners for a given camera FOV.
+ */
+function frustumCorners(hFov: number, vFov: number, far: number): number[][] {
+  const fl = far * Math.tan(hFov / 2)
+  const ft = far * Math.tan(vFov / 2)
+  return [
+    [-fl, -ft, far],
+    [fl, -ft, far],
+    [fl, ft, far],
+    [-fl, ft, far],
+  ]
+}
+
+/**
+ * Build the full frustum wireframe (base rectangle + 4 pyramid edges).
  */
 export function buildFrustumLines(
   hFov: number,
   vFov: number,
   far: number,
 ): Float32Array {
-  const hHalf = Math.tan(hFov / 2)
-  const vHalf = Math.tan(vFov / 2)
-
-  // Far plane corners (in camera frame: X=right, Y=down, Z=forward)
-  const fl = far * hHalf
-  const ft = far * vHalf
-  const f = [
-    [-fl, -ft, far],
-    [fl, -ft, far],
-    [fl, ft, far],
-    [-fl, ft, far],
-  ]
-
-  // Lines: 4 far edges + 4 origin→far corner (pyramid)
+  const f = frustumCorners(hFov, vFov, far)
   const lines: number[] = []
   const addLine = (a: number[], b: number[]) => {
     lines.push(a[0], a[1], a[2], b[0], b[1], b[2])
   }
-
-  // Far rectangle
   for (let i = 0; i < 4; i++) addLine(f[i], f[(i + 1) % 4])
-  // Origin to far corners (pyramid lines from camera position)
   const o = [0, 0, 0]
   for (let i = 0; i < 4; i++) addLine(o, f[i])
+  return new Float32Array(lines)
+}
 
+/**
+ * Build only the base rectangle (far plane outline) of the frustum.
+ */
+export function buildFrustumBase(
+  hFov: number,
+  vFov: number,
+  far: number,
+): Float32Array {
+  const f = frustumCorners(hFov, vFov, far)
+  const lines: number[] = []
+  for (let i = 0; i < 4; i++) {
+    const a = f[i], b = f[(i + 1) % 4]
+    lines.push(a[0], a[1], a[2], b[0], b[1], b[2])
+  }
+  return new Float32Array(lines)
+}
+
+/**
+ * Build only the 4 pyramid edges (origin → far corners), without the base.
+ */
+export function buildFrustumEdges(
+  hFov: number,
+  vFov: number,
+  far: number,
+): Float32Array {
+  const f = frustumCorners(hFov, vFov, far)
+  const lines: number[] = []
+  const o = [0, 0, 0]
+  for (let i = 0; i < 4; i++) {
+    lines.push(o[0], o[1], o[2], f[i][0], f[i][1], f[i][2])
+  }
   return new Float32Array(lines)
 }

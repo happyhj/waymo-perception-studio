@@ -7,7 +7,7 @@
 
 import { useMemo } from 'react'
 import { useSceneStore } from '../../stores/useSceneStore'
-import { parseCameraCalibrations, buildFrustumLines, type CameraCalib } from '../../utils/cameraCalibration'
+import { parseCameraCalibrations, buildFrustumBase, buildFrustumEdges, type CameraCalib } from '../../utils/cameraCalibration'
 import { CameraName } from '../../types/waymo'
 import { colors } from '../../theme'
 
@@ -15,7 +15,7 @@ import { colors } from '../../theme'
 // Constants
 // ---------------------------------------------------------------------------
 
-const FRUSTUM_FAR = 6
+const FRUSTUM_FAR = 2
 
 const CAMERA_COLORS: Record<number, string> = {
   [CameraName.FRONT]: colors.camFront,
@@ -40,37 +40,51 @@ function CameraFrustum({
 }) {
   const color = CAMERA_COLORS[calib.cameraName] ?? '#888888'
 
-  const linePositions = useMemo(
-    () => buildFrustumLines(calib.hFov, calib.vFov, FRUSTUM_FAR),
+  const basePositions = useMemo(
+    () => buildFrustumBase(calib.hFov, calib.vFov, FRUSTUM_FAR),
+    [calib.hFov, calib.vFov],
+  )
+  const edgePositions = useMemo(
+    () => buildFrustumEdges(calib.hFov, calib.vFov, FRUSTUM_FAR),
     [calib.hFov, calib.vFov],
   )
 
-  // Highlight: hovered or active → full opacity, else dim
-  const lineOpacity = hovered ? 1.0 : active ? 1.0 : 0.25
-  const lineColor = hovered ? '#ffffff' : color
+  const highlighted = hovered || active
+  const lineColor = highlighted ? (hovered ? '#ffffff' : color) : color
+  const lineOpacity = highlighted ? 1.0 : 0.6
 
   return (
     <group
       position={calib.position}
       quaternion={calib.quaternion}
     >
-      {/* Frustum wireframe lines */}
+      {/* Base rectangle — always visible */}
       <lineSegments>
         <bufferGeometry>
           <bufferAttribute
             attach="attributes-position"
-            array={linePositions}
-            count={linePositions.length / 3}
+            array={basePositions}
+            count={basePositions.length / 3}
             itemSize={3}
           />
         </bufferGeometry>
-        <lineBasicMaterial
-          color={lineColor}
-          transparent
-          opacity={lineOpacity}
-          linewidth={1}
-        />
+        <lineBasicMaterial color={lineColor} transparent opacity={lineOpacity} />
       </lineSegments>
+
+      {/* Pyramid edges — hover/active only */}
+      {highlighted && (
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              array={edgePositions}
+              count={edgePositions.length / 3}
+              itemSize={3}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color={lineColor} />
+        </lineSegments>
+      )}
     </group>
   )
 }

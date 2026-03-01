@@ -130,7 +130,7 @@ describe('useSceneStore', () => {
       const pc = state().currentFrame!.pointCloud!
       expect(pc.pointCount).toBeGreaterThan(150000)
       expect(pc.pointCount).toBeLessThan(200000)
-      expect(pc.positions.length).toBe(pc.pointCount * 4)
+      expect(pc.positions.length).toBe(pc.pointCount * 6)
     })
 
     it('has bounding boxes', () => {

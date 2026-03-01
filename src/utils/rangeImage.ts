@@ -38,8 +38,11 @@ export interface RangeImage {
   shape: [number, number, number]
 }
 
+/** Floats per point in the interleaved buffer */
+export const POINT_STRIDE = 6
+
 export interface PointCloud {
-  /** Interleaved [x, y, z, intensity, x, y, z, intensity, ...] in vehicle frame */
+  /** Interleaved [x, y, z, intensity, range, elongation, ...] in vehicle frame */
   positions: Float32Array
   /** Number of valid points */
   pointCount: number
@@ -160,9 +163,9 @@ export function convertRangeImageToPointCloud(
   const e10 = e[4], e11 = e[5], e12 = e[6], e13 = e[7]
   const e20 = e[8], e21 = e[9], e22 = e[10], e23 = e[11]
 
-  // Worst case: all pixels valid → 4 floats per point (x, y, z, intensity)
+  // Worst case: all pixels valid → POINT_STRIDE floats per point
   const maxPoints = height * width
-  const output = new Float32Array(maxPoints * 4)
+  const output = new Float32Array(maxPoints * POINT_STRIDE)
   let pointCount = 0
 
   for (let row = 0; row < height; row++) {
@@ -176,6 +179,7 @@ export function convertRangeImageToPointCloud(
       if (range <= 0) continue
 
       const intensity = values[pixelIdx + 1]
+      const elongation = values[pixelIdx + 2]
 
       // Spherical → Cartesian (sensor frame)
       const x = range * ci * cosAz[col]
@@ -187,18 +191,20 @@ export function convertRangeImageToPointCloud(
       const vy = e10 * x + e11 * y + e12 * z + e13
       const vz = e20 * x + e21 * y + e22 * z + e23
 
-      const outIdx = pointCount * 4
+      const outIdx = pointCount * POINT_STRIDE
       output[outIdx] = vx
       output[outIdx + 1] = vy
       output[outIdx + 2] = vz
       output[outIdx + 3] = intensity
+      output[outIdx + 4] = range
+      output[outIdx + 5] = elongation
 
       pointCount++
     }
   }
 
   return {
-    positions: output.subarray(0, pointCount * 4),
+    positions: output.subarray(0, pointCount * POINT_STRIDE),
     pointCount,
   }
 }
@@ -241,11 +247,11 @@ export function convertAllSensors(
   }
 
   // Merge into single Float32Array
-  const merged = new Float32Array(totalPoints * 4)
+  const merged = new Float32Array(totalPoints * POINT_STRIDE)
   let offset = 0
   for (const cloud of perSensor.values()) {
     merged.set(cloud.positions, offset)
-    offset += cloud.pointCount * 4
+    offset += cloud.pointCount * POINT_STRIDE
   }
 
   return {

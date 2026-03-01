@@ -5,22 +5,22 @@
  * When all sensors visible, uses pre-merged buffer (zero copy).
  * When some hidden, merges only visible sensor clouds on the fly.
  *
- * Color mode: turbo colormap based on intensity.
+ * Colormap modes: intensity (default), height (Z), range, elongation.
+ * When sensors are filtered, per-sensor coloring overrides colormap.
  */
 
 import { useRef, useEffect, useMemo } from 'react'
 import * as THREE from 'three'
+import { useFrame } from '@react-three/fiber'
 import { useSceneStore } from '../../stores/useSceneStore'
-import type { PointCloud as PointCloudType } from '../../utils/rangeImage'
+import type { ColormapMode } from '../../stores/useSceneStore'
+import { POINT_STRIDE } from '../../utils/rangeImage'
 
 // ---------------------------------------------------------------------------
-// Intensity colormap — cool-tinted white ramp
-//
-// Dark blue-gray → neutral mid → bright white.
-// Avoids warm hues so perception box colors (orange, blue, crimson, magenta)
-// pop clearly on top. Perceptually uniform luminance progression.
+// Colormaps
 // ---------------------------------------------------------------------------
 
+/** Cool-tinted white ramp for intensity (dark navy → near-white) */
 const INTENSITY_STOPS: [number, number, number][] = [
   [0.08, 0.09, 0.16],  // 0.0 — near-black (dark navy)
   [0.16, 0.20, 0.32],  // ~0.2 — dark slate
@@ -30,16 +30,53 @@ const INTENSITY_STOPS: [number, number, number][] = [
   [0.95, 0.97, 1.00],  // 1.0 — near-white
 ]
 
-function intensityColor(t: number): [number, number, number] {
+/** Turbo-like colormap for height (blue → cyan → green → yellow → red) */
+const HEIGHT_STOPS: [number, number, number][] = [
+  [0.19, 0.07, 0.23],  // 0.0 — deep purple
+  [0.12, 0.39, 0.72],  // 0.2 — blue
+  [0.06, 0.72, 0.60],  // 0.4 — teal
+  [0.47, 0.87, 0.26],  // 0.6 — green-yellow
+  [0.94, 0.73, 0.14],  // 0.8 — amber
+  [0.84, 0.18, 0.15],  // 1.0 — red
+]
+
+/** Warm ramp for range (dark → amber → bright yellow) */
+const RANGE_STOPS: [number, number, number][] = [
+  [0.06, 0.04, 0.12],  // 0.0 — near-black
+  [0.28, 0.08, 0.26],  // 0.2 — dark magenta
+  [0.60, 0.15, 0.20],  // 0.4 — crimson
+  [0.88, 0.40, 0.10],  // 0.6 — orange
+  [0.98, 0.72, 0.15],  // 0.8 — amber
+  [1.00, 0.98, 0.60],  // 1.0 — bright yellow
+]
+
+/** Green ramp for elongation (dark → emerald → bright lime) */
+const ELONGATION_STOPS: [number, number, number][] = [
+  [0.04, 0.06, 0.10],  // 0.0 — near-black
+  [0.06, 0.18, 0.22],  // 0.2 — dark teal
+  [0.08, 0.38, 0.30],  // 0.4 — forest
+  [0.20, 0.62, 0.35],  // 0.6 — emerald
+  [0.50, 0.84, 0.40],  // 0.8 — lime-green
+  [0.80, 0.98, 0.55],  // 1.0 — bright lime
+]
+
+const COLORMAP_STOPS: Record<ColormapMode, [number, number, number][]> = {
+  intensity: INTENSITY_STOPS,
+  height: HEIGHT_STOPS,
+  range: RANGE_STOPS,
+  elongation: ELONGATION_STOPS,
+}
+
+function colormapColor(stops: [number, number, number][], t: number): [number, number, number] {
   const tc = Math.max(0, Math.min(1, t))
-  const idx = tc * (INTENSITY_STOPS.length - 1)
+  const idx = tc * (stops.length - 1)
   const lo = Math.floor(idx)
-  const hi = Math.min(lo + 1, INTENSITY_STOPS.length - 1)
+  const hi = Math.min(lo + 1, stops.length - 1)
   const f = idx - lo
   return [
-    INTENSITY_STOPS[lo][0] + f * (INTENSITY_STOPS[hi][0] - INTENSITY_STOPS[lo][0]),
-    INTENSITY_STOPS[lo][1] + f * (INTENSITY_STOPS[hi][1] - INTENSITY_STOPS[lo][1]),
-    INTENSITY_STOPS[lo][2] + f * (INTENSITY_STOPS[hi][2] - INTENSITY_STOPS[lo][2]),
+    stops[lo][0] + f * (stops[hi][0] - stops[lo][0]),
+    stops[lo][1] + f * (stops[hi][1] - stops[lo][1]),
+    stops[lo][2] + f * (stops[hi][2] - stops[lo][2]),
   ]
 }
 
@@ -50,6 +87,26 @@ const SENSOR_COLORS: Record<number, [number, number, number]> = {
   3: [0.30, 0.66, 1.0],  // SIDE_LEFT — sky blue (#4DA8FF)
   4: [0.48, 0.44, 1.0],  // SIDE_RIGHT — indigo (#7B6FFF)
   5: [0.71, 0.56, 1.0],  // REAR — lavender (#B490FF)
+}
+
+// ---------------------------------------------------------------------------
+// Attribute extraction helpers
+// ---------------------------------------------------------------------------
+
+/** Offset within the POINT_STRIDE-sized record for each attribute */
+const ATTR_OFFSET: Record<ColormapMode, number> = {
+  intensity: 3,   // positions[src + 3]
+  height: 2,      // positions[src + 2] = z
+  range: 4,       // positions[src + 4]
+  elongation: 5,  // positions[src + 5]
+}
+
+/** Normalization ranges per attribute (min, max) for mapping to 0..1 */
+const ATTR_RANGE: Record<ColormapMode, [number, number]> = {
+  intensity: [0, 1],        // already 0..1 in Waymo data
+  height: [-3, 8],          // z: typical ground=-2m, top of trucks ~5m
+  range: [0, 75],           // meters (max useful range ~75m for visualization)
+  elongation: [0, 1],       // already 0..1 in Waymo data
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +123,7 @@ export default function PointCloud() {
   const currentFrame = useSceneStore((s) => s.currentFrame)
   const visibleSensors = useSceneStore((s) => s.visibleSensors)
   const pointOpacity = useSceneStore((s) => s.pointOpacity)
+  const colormapMode = useSceneStore((s) => s.colormapMode)
   const geometryRef = useRef<THREE.BufferGeometry>(null)
 
   // Check if all sensors visible (fast path — use pre-merged buffer)
@@ -80,8 +138,16 @@ export default function PointCloud() {
     return { posAttr: pos, colorAttr: col }
   }, [])
 
-  // Update geometry when pointCloud or visibleSensors changes
-  useEffect(() => {
+  // Mark dirty when any input changes — actual buffer update happens in useFrame
+  // to avoid R3F reconciler resetting needsUpdate between useEffect and render.
+  const dirtyRef = useRef(true)
+  useEffect(() => { dirtyRef.current = true }, [currentFrame, visibleSensors, allVisible, colormapMode])
+
+  // Apply buffer updates inside the Three.js render loop
+  useFrame(() => {
+    if (!dirtyRef.current) return
+    dirtyRef.current = false
+
     const geom = geometryRef.current
     if (!geom || !currentFrame) {
       if (geom) geom.setDrawRange(0, 0)
@@ -90,9 +156,13 @@ export default function PointCloud() {
 
     const posArr = posAttr.array as Float32Array
     const colArr = colorAttr.array as Float32Array
+    const stops = COLORMAP_STOPS[colormapMode]
+    const attrOff = ATTR_OFFSET[colormapMode]
+    const [attrMin, attrMax] = ATTR_RANGE[colormapMode]
+    const attrSpan = attrMax - attrMin
 
     if (allVisible) {
-      // Fast path: use pre-merged buffer, turbo colormap
+      // Fast path: use pre-merged buffer
       const pc = currentFrame.pointCloud
       if (!pc || pc.pointCount === 0) {
         geom.setDrawRange(0, 0)
@@ -102,12 +172,14 @@ export default function PointCloud() {
       const count = Math.min(pointCount, MAX_POINTS)
 
       for (let i = 0; i < count; i++) {
-        const src = i * 4
+        const src = i * POINT_STRIDE
         const dst = i * 3
         posArr[dst] = positions[src]
         posArr[dst + 1] = positions[src + 1]
         posArr[dst + 2] = positions[src + 2]
-        const [r, g, b] = intensityColor(positions[src + 3])
+        const raw = positions[src + attrOff]
+        const t = (raw - attrMin) / attrSpan
+        const [r, g, b] = colormapColor(stops, t)
         colArr[dst] = r
         colArr[dst + 1] = g
         colArr[dst + 2] = b
@@ -132,7 +204,7 @@ export default function PointCloud() {
         const { positions } = cloud
 
         for (let i = 0; i < count; i++) {
-          const src = i * 4
+          const src = i * POINT_STRIDE
           const dst = (total + i) * 3
           posArr[dst] = positions[src]
           posArr[dst + 1] = positions[src + 1]
@@ -152,7 +224,7 @@ export default function PointCloud() {
       geom.setDrawRange(0, total)
       geom.computeBoundingSphere()
     }
-  }, [currentFrame, visibleSensors, allVisible, posAttr, colorAttr])
+  })
 
   return (
     <points frustumCulled={false}>

@@ -23,6 +23,7 @@ import {
   convertRangeImageToPointCloud,
   convertAllSensors,
   parseLidarCalibration,
+  POINT_STRIDE,
   type LidarCalibration,
   type RangeImage,
 } from '../rangeImage'
@@ -183,7 +184,7 @@ describe('GPU vs CPU consistency', () => {
     let cpuSum = 0
     let gpuSum = 0
     for (let i = 0; i < cpuCloud.pointCount; i++) {
-      cpuSum += cpuCloud.positions[i * 4 + 3]
+      cpuSum += cpuCloud.positions[i * POINT_STRIDE + 3]
     }
     for (let i = 0; i < gpuCloud.pointCount; i++) {
       gpuSum += gpuCloud.positions[i * 4 + 3]

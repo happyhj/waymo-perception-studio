@@ -17,6 +17,7 @@ import {
   convertRangeImageToPointCloud,
   convertAllSensors,
   parseLidarCalibration,
+  POINT_STRIDE,
   type LidarCalibration,
   type RangeImage,
 } from '../rangeImage'
@@ -179,14 +180,14 @@ describe('CPU Benchmark', () => {
 })
 
 describe('Output format validation', () => {
-  it('positions are properly interleaved [x,y,z,i, x,y,z,i, ...]', () => {
+  it('positions are properly interleaved [x,y,z,i,r,e, ...]', () => {
     const cloud = convertAllSensors(allRangeImages, calibrations)
 
-    // Length must be exactly pointCount × 4
-    expect(cloud.positions.length).toBe(cloud.pointCount * 4)
+    // Length must be exactly pointCount × POINT_STRIDE
+    expect(cloud.positions.length).toBe(cloud.pointCount * POINT_STRIDE)
 
     // Spot-check: no NaN values
-    for (let i = 0; i < Math.min(cloud.pointCount * 4, 1000); i++) {
+    for (let i = 0; i < Math.min(cloud.pointCount * POINT_STRIDE, 1000); i++) {
       expect(Number.isNaN(cloud.positions[i])).toBe(false)
       expect(Number.isFinite(cloud.positions[i])).toBe(true)
     }
