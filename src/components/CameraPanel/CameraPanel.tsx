@@ -105,47 +105,56 @@ interface CameraViewProps {
 }
 
 function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov, onHover }: CameraViewProps) {
-  /** The URL currently displayed (kept until a new image fully loads) */
-  const [displayUrl, setDisplayUrl] = useState<string | null>(null)
-  /** The newest blob URL being loaded (may not be visible yet) */
-  const pendingUrlRef = useRef<string | null>(null)
-  /** The blob URL currently shown on screen (for cleanup) */
-  const activeUrlRef = useRef<string | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  /** Whether we've drawn at least one frame (hides "No image" placeholder) */
+  const [hasImage, setHasImage] = useState(false)
+  /** Track latest request to discard stale decodes during fast scrubbing */
+  const seqRef = useRef(0)
+  /** Close previous ImageBitmap to free GPU/raster memory */
+  const activeBitmapRef = useRef<ImageBitmap | null>(null)
   const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
     if (!imageBuffer) return // keep showing the last good image
 
-    // Create blob URL for the new frame
-    const blob = new Blob([imageBuffer], { type: 'image/jpeg' })
-    const newUrl = URL.createObjectURL(blob)
-    pendingUrlRef.current = newUrl
+    const seq = ++seqRef.current
 
-    // Preload: only swap when the browser has the image decoded
-    const img = new Image()
-    img.onload = () => {
-      // Only apply if this is still the most recent request
-      if (pendingUrlRef.current !== newUrl) {
-        URL.revokeObjectURL(newUrl)
-        return
-      }
-      // Revoke the previously displayed URL
-      if (activeUrlRef.current) URL.revokeObjectURL(activeUrlRef.current)
-      activeUrlRef.current = newUrl
-      setDisplayUrl(newUrl)
-    }
-    img.onerror = () => {
-      // Corrupted frame — discard, keep previous image
-      URL.revokeObjectURL(newUrl)
-      if (pendingUrlRef.current === newUrl) pendingUrlRef.current = null
-    }
-    img.src = newUrl
+    const blob = new Blob([imageBuffer], { type: 'image/jpeg' })
+    createImageBitmap(blob, { resizeHeight: STRIP_HEIGHT, resizeQuality: 'low' }).then(
+      (bmp) => {
+        if (seq !== seqRef.current) { bmp.close(); return }
+        const canvas = canvasRef.current
+        if (!canvas) { bmp.close(); return }
+
+        // Size canvas to bitmap (only changes on first frame or resolution change)
+        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+          canvas.width = bmp.width
+          canvas.height = bmp.height
+        }
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(bmp, 0, 0)
+
+        // Close previous bitmap, keep reference to new one for next cleanup
+        if (activeBitmapRef.current) activeBitmapRef.current.close()
+        activeBitmapRef.current = bmp
+
+        if (!hasImage) setHasImage(true)
+      },
+      () => { /* corrupted frame — keep previous image */ },
+    )
 
     return () => {
-      // If a newer effect fires before this image loaded, clean up
-      if (pendingUrlRef.current === newUrl) pendingUrlRef.current = null
+      // If a newer effect fires before decode completes, seq check handles it
     }
-  }, [imageBuffer])
+  }, [imageBuffer]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup bitmap on unmount
+  useEffect(() => () => {
+    if (activeBitmapRef.current) {
+      activeBitmapRef.current.close()
+      activeBitmapRef.current = null
+    }
+  }, [])
 
   // FRONT camera gets slightly more space
   const isFront = cameraName === CameraName.FRONT
@@ -170,18 +179,16 @@ function CameraView({ cameraName, label, imageBuffer, boxes, active, onTogglePov
       onMouseEnter={() => { setHovered(true); onHover(cameraName) }}
       onMouseLeave={() => { setHovered(false); onHover(null) }}
     >
-      {displayUrl ? (
-        <img
-          src={displayUrl}
-          alt={label}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: 'block',
-          }}
-        />
-      ) : (
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: hasImage ? 'block' : 'none',
+        }}
+      />
+      {!hasImage && (
         <div style={{
           width: '100%',
           height: '100%',
