@@ -314,11 +314,10 @@ function InitialCameraSetup({ orbitRef }: { orbitRef: React.RefObject<any> }) {
 // ---------------------------------------------------------------------------
 // WorldFollowCamera — delta-based camera follow in world mode
 // ---------------------------------------------------------------------------
-function WorldFollowCamera({ orbitRef, enabled, returningRef, resetRequestedRef }: {
+function WorldFollowCamera({ orbitRef, enabled, returningRef }: {
   orbitRef: React.RefObject<any>
   enabled: boolean
   returningRef: React.MutableRefObject<boolean>
-  resetRequestedRef: React.MutableRefObject<boolean>
 }) {
   const prevPos = useRef<THREE.Vector3 | null>(null)
   const enabledRef = useRef(enabled)
@@ -338,21 +337,23 @@ function WorldFollowCamera({ orbitRef, enabled, returningRef, resetRequestedRef 
       const pose = state.currentFrame?.vehiclePose ?? null
       if (!pose) return
 
-      // On rewind/jump (frame goes backwards), reset tracking and snap
-      // camera to chase-cam at the new vehicle position.
-      if (state.currentFrameIndex < prev.currentFrameIndex) {
-        prevPos.current = null
-        if (enabledRef.current) {
-          resetRequestedRef.current = true
-        }
-      }
-
       _followCurrPos.set(pose[3], pose[7], pose[11])
 
       if (enabledRef.current && prevPos.current && orbitRef.current) {
         _followDelta.copy(_followCurrPos).sub(prevPos.current)
-        orbitRef.current.object.position.add(_followDelta)
-        orbitRef.current.target.add(_followDelta)
+
+        // Large jump (rewind, scrub, segment switch) → snap to chase-cam.
+        // Normal driving delta is <2m/frame; threshold 100 = 10m squared.
+        if (_followDelta.lengthSq() > 100) {
+          _resetPoseMat.fromArray(pose).transpose()
+          _resetPos.copy(CHASE_CAM_POSITION).applyMatrix4(_resetPoseMat)
+          _resetTarget.copy(CHASE_CAM_TARGET).applyMatrix4(_resetPoseMat)
+          orbitRef.current.object.position.copy(_resetPos)
+          orbitRef.current.target.copy(_resetTarget)
+        } else {
+          orbitRef.current.object.position.add(_followDelta)
+          orbitRef.current.target.add(_followDelta)
+        }
         orbitRef.current.update()
       }
 
@@ -517,7 +518,7 @@ export default function LidarViewer() {
 
         {/* Chase-cam initial setup + world follow + reset */}
         <InitialCameraSetup orbitRef={orbitRef} />
-        <WorldFollowCamera orbitRef={orbitRef} enabled={followCam} returningRef={returningRef} resetRequestedRef={resetRequestedRef} />
+        <WorldFollowCamera orbitRef={orbitRef} enabled={followCam} returningRef={returningRef} />
         <ResetViewController orbitRef={orbitRef} resetRequestedRef={resetRequestedRef} />
 
         {/* Ground grid (XY plane, Z=0) — stays at world origin */}
