@@ -2,13 +2,8 @@
   <img src="assets/banner.png" alt="Perception Studio" width="720" />
 </p>
 
-<h1 align="center">Perception Studio</h1>
-
 <p align="center">
-  Browser-native 3D perception explorer for Waymo Open Dataset v2.0 Perception
-</p>
-
-<p align="center">
+  Browser-native 3D perception explorer for Waymo Open Dataset v2.0 Perception<br/>
   No install. No server. Just drag, drop, and explore.
 </p>
 
