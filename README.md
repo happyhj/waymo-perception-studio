@@ -7,6 +7,10 @@
   No install. No server. Your data never leaves your browser.
 </p>
 
+<p align="center">
+  <a href="https://happyhj.github.io/waymo-perception-studio"><strong>✦ Live Demo</strong></a>
+</p>
+
 <table>
   <tr>
     <td><video src="https://github.com/user-attachments/assets/c6bf45f1-41c4-41d3-9e93-2b09a99606bf" autoplay loop muted playsinline></video></td>
@@ -23,7 +27,7 @@
 
 ## 🚀 Try It With Your Waymo Data
 
-**Already have Waymo Open Dataset v2.0 Perception downloaded?** Just open the [live demo](https://heejaekim.github.io/waymo-perception-studio), drop your files, and go.
+**Already have Waymo Open Dataset v2.0 Perception downloaded?** Just open the [live demo](https://happyhj.github.io/waymo-perception-studio), drop your files, and go.
 
 **Don't have the data yet?** It's free with a Google account.
 
