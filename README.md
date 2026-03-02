@@ -7,20 +7,18 @@
   No install. No server. Your data never leaves your browser.
 </p>
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/c6bf45f1-41c4-41d3-9e93-2b09a99606bf" width="720" autoplay loop muted playsinline></video>
-</p>
+<table>
+  <tr>
+    <td><video src="https://github.com/user-attachments/assets/c6bf45f1-41c4-41d3-9e93-2b09a99606bf" autoplay loop muted playsinline></video></td>
+    <td><video src="https://github.com/user-attachments/assets/a6361d24-00a6-4e24-9365-210f9a94277c" autoplay loop muted playsinline></video></td>
+  </tr>
+</table>
 
 ## About
 
 - **See what the car sees**: explore real self-driving scenes in 3D with LiDAR point clouds and 5 synchronized camera views
 - **3D object models**: vehicles, pedestrians, and cyclists rendered as 3D models with color-coded tracking
 - **Camera POV mode**: click a camera to jump into its viewpoint in 3D, compare what the sensor sees side by side
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/a6361d24-00a6-4e24-9365-210f9a94277c" width="720" autoplay loop muted playsinline></video>
-</p>
-
 - **Cross-modal linking**: hover over a camera detection and its 3D counterpart lights up, and vice versa
 
 ## 🚀 Try It With Your Waymo Data

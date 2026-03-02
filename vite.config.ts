@@ -71,6 +71,7 @@ function serveWaymoData(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/waymo-perception-studio/',
   plugins: [react(), serveWaymoData()],
   resolve: {
     alias: {
