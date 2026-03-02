@@ -322,7 +322,7 @@ export function TrajectoryTrails() {
     return parseBoxes(boxRows)
   }, [boxRows])
 
-  if (boxMode === 'off' || trailLength <= 0 || parsed.length === 0) return null
+  if (boxMode === 'off' || !worldMode || trailLength <= 0 || parsed.length === 0) return null
 
   return (
     <>

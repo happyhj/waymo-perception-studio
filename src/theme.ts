@@ -58,8 +58,8 @@ export const colors = {
   boxUnknown: '#6B7280',
 
   /** 3D scene — subtle so LiDAR points dominate */
-  gridMajor: '#242A42',
-  gridMinor: '#1C2135',
+  gridMajor: '#2E3550',
+  gridMinor: '#252B42',
   vehicleMarker: '#00E89D',
 
   /** Gizmo */

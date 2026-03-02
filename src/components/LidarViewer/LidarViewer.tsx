@@ -24,6 +24,18 @@ import { BOX_TYPE_COLORS, BoxType } from '../../types/waymo'
 import type { ColormapMode } from '../../stores/useSceneStore'
 import { colors, fonts, radius } from '../../theme'
 
+// ---------------------------------------------------------------------------
+// Chase-cam defaults + reusable temp objects
+// ---------------------------------------------------------------------------
+const CHASE_CAM_POSITION = new THREE.Vector3(-15, -3, 12)
+const CHASE_CAM_TARGET = new THREE.Vector3(5, 0, 0)
+// Temp objects for follow/reset (avoid allocation in hot path)
+const _followCurrPos = new THREE.Vector3()
+const _followDelta = new THREE.Vector3()
+const _resetPos = new THREE.Vector3()
+const _resetTarget = new THREE.Vector3()
+const _resetPoseMat = new THREE.Matrix4()
+
 const SENSOR_INFO: { id: number; label: string; color: string }[] = [
   { id: 1, label: 'TOP', color: colors.sensorTop },
   { id: 2, label: 'FRONT', color: colors.sensorFront },
@@ -244,6 +256,120 @@ function WorldPoseSync({ groupRef }: { groupRef: React.RefObject<THREE.Group | n
 }
 
 // ---------------------------------------------------------------------------
+// InitialCameraSetup — one-time orbit target setup for chase-cam
+// ---------------------------------------------------------------------------
+function InitialCameraSetup({ orbitRef }: { orbitRef: React.RefObject<any> }) {
+  const initialized = useRef(false)
+  useFrame(() => {
+    if (!initialized.current && orbitRef.current) {
+      orbitRef.current.target.copy(CHASE_CAM_TARGET)
+      orbitRef.current.update()
+      initialized.current = true
+    }
+  })
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// WorldFollowCamera — delta-based camera follow in world mode
+// ---------------------------------------------------------------------------
+function WorldFollowCamera({ orbitRef, enabled }: { orbitRef: React.RefObject<any>; enabled: boolean }) {
+  const prevPos = useRef<THREE.Vector3 | null>(null)
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
+
+  useEffect(() => {
+    return useSceneStore.subscribe((state, prev) => {
+      // Only act on frame changes
+      if (state.currentFrameIndex === prev.currentFrameIndex) return
+      // Skip during POV mode
+      if (state.activeCam !== null) return
+      // Only in world mode
+      if (!state.worldMode) return
+
+      const pose = state.currentFrame?.vehiclePose ?? null
+      if (!pose) return
+
+      _followCurrPos.set(pose[3], pose[7], pose[11])
+
+      if (enabledRef.current && prevPos.current && orbitRef.current) {
+        _followDelta.copy(_followCurrPos).sub(prevPos.current)
+        orbitRef.current.object.position.add(_followDelta)
+        orbitRef.current.target.add(_followDelta)
+        orbitRef.current.update()
+      }
+
+      if (!prevPos.current) prevPos.current = new THREE.Vector3()
+      prevPos.current.copy(_followCurrPos)
+    })
+  }, [orbitRef])
+
+  // Reset tracking when leaving world mode or exiting POV
+  useEffect(() => {
+    return useSceneStore.subscribe((state, prev) => {
+      if (state.worldMode !== prev.worldMode && !state.worldMode) {
+        prevPos.current = null
+      }
+      if (state.activeCam !== prev.activeCam && state.activeCam === null) {
+        prevPos.current = null
+      }
+    })
+  }, [])
+
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// ResetViewController — smoothly animates camera back to chase-cam
+// ---------------------------------------------------------------------------
+function ResetViewController({
+  orbitRef,
+  resetRequestedRef,
+}: {
+  orbitRef: React.RefObject<any>
+  resetRequestedRef: React.MutableRefObject<boolean>
+}) {
+  const animating = useRef(false)
+
+  useFrame(() => {
+    if (resetRequestedRef.current && !animating.current) {
+      animating.current = true
+      resetRequestedRef.current = false
+
+      // Compute target position/target based on mode
+      const { worldMode, currentFrame } = useSceneStore.getState()
+      const pose = currentFrame?.vehiclePose ?? null
+
+      if (worldMode && pose) {
+        _resetPoseMat.fromArray(pose).transpose()
+        _resetPos.copy(CHASE_CAM_POSITION).applyMatrix4(_resetPoseMat)
+        _resetTarget.copy(CHASE_CAM_TARGET).applyMatrix4(_resetPoseMat)
+      } else {
+        _resetPos.copy(CHASE_CAM_POSITION)
+        _resetTarget.copy(CHASE_CAM_TARGET)
+      }
+    }
+
+    if (!animating.current || !orbitRef.current) return
+
+    const cam = orbitRef.current.object
+    cam.position.lerp(_resetPos, LERP_SPEED)
+    orbitRef.current.target.lerp(_resetTarget, LERP_SPEED)
+    orbitRef.current.update()
+
+    const dist = cam.position.distanceTo(_resetPos)
+    if (dist < SNAP_THRESHOLD) {
+      cam.position.copy(_resetPos)
+      orbitRef.current.target.copy(_resetTarget)
+      orbitRef.current.update()
+      animating.current = false
+    }
+  })
+
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -268,8 +394,10 @@ export default function LidarViewer() {
   const orbitRef = useRef<any>(null)
   const sceneGroupRef = useRef<THREE.Group>(null)
   const returningRef = useRef(false)
+  const resetRequestedRef = useRef(false)
   const bevCanvasRef = useRef<HTMLCanvasElement>(null)
-  const [bevZoom, setBevZoom] = useState(0)
+  const [bevZoom, setBevZoom] = useState(1)
+  const [followCam, setFollowCam] = useState(true)
   const [panelOpen, setPanelOpen] = useState(true)
 
   // Parse calibrations once
@@ -292,7 +420,7 @@ export default function LidarViewer() {
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <Canvas
         camera={{
-          position: [-30, -30, 40],
+          position: [-15, -3, 12],
           fov: 60,
           near: 0.1,
           far: 500,
@@ -330,6 +458,11 @@ export default function LidarViewer() {
         {/* POV animation controller */}
         <PovController targetCalib={activeCalib} orbitRef={orbitRef} returningRef={returningRef} />
 
+        {/* Chase-cam initial setup + world follow + reset */}
+        <InitialCameraSetup orbitRef={orbitRef} />
+        <WorldFollowCamera orbitRef={orbitRef} enabled={followCam} />
+        <ResetViewController orbitRef={orbitRef} resetRequestedRef={resetRequestedRef} />
+
         {/* Ground grid (XY plane, Z=0) — stays at world origin */}
         <gridHelper
           args={[200, 40, colors.gridMajor, colors.gridMinor]}
@@ -364,6 +497,97 @@ export default function LidarViewer() {
         onToggleZoom={() => setBevZoom((z) => (z + 1) % BEV_ZOOM_LEVELS.length)}
       />
 
+      {/* Camera controls — hidden during POV */}
+      {activeCam === null && (
+        <div style={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+          padding: 4,
+          backgroundColor: 'rgba(26, 31, 53, 0.75)',
+          borderRadius: radius.md,
+          backdropFilter: 'blur(12px)',
+          border: `1px solid ${colors.border}`,
+          pointerEvents: 'auto',
+        }}>
+          {/* Follow toggle — world mode only */}
+          {worldMode && (
+            <button
+              onClick={() => {
+                const next = !followCam
+                setFollowCam(next)
+                if (next) resetRequestedRef.current = true
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 8px',
+                border: 'none',
+                borderRadius: radius.sm,
+                cursor: 'pointer',
+                backgroundColor: followCam ? 'rgba(0, 200, 219, 0.12)' : 'transparent',
+                transition: 'background-color 0.15s',
+              }}
+            >
+              {followCam ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <rect x="3" y="7" width="10" height="7" rx="1.5" fill={colors.accentBlue} />
+                  <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" stroke={colors.accentBlue} strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <rect x="3" y="7" width="10" height="7" rx="1.5" fill={colors.textDim} />
+                  <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0" stroke={colors.textDim} strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                </svg>
+              )}
+              <span style={{
+                fontSize: '10px',
+                fontFamily: fonts.sans,
+                fontWeight: 500,
+                color: followCam ? colors.accentBlue : colors.textDim,
+                transition: 'color 0.15s',
+              }}>
+                Follow
+              </span>
+            </button>
+          )}
+
+          {/* Reset View */}
+          <button
+            onClick={() => { resetRequestedRef.current = true }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 8px',
+              border: 'none',
+              borderRadius: radius.sm,
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M2 8a6 6 0 0 1 10.24-4.24L14 2v5h-5l1.76-1.76A4 4 0 1 0 12 8h2a6 6 0 0 1-12 0z"
+                fill={colors.textSecondary}
+              />
+            </svg>
+            <span style={{
+              fontSize: '10px',
+              fontFamily: fonts.sans,
+              fontWeight: 500,
+              color: colors.textSecondary,
+            }}>
+              Reset
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Layer control overlay */}
       <div style={{
         position: 'absolute',
@@ -380,252 +604,190 @@ export default function LidarViewer() {
         backdropFilter: 'blur(12px)',
         border: `1px solid ${colors.border}`,
       }}>
-        {/* ── Header: toggle row ── */}
-        <button
-          onClick={() => setPanelOpen((v) => !v)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 6,
-            padding: '2px 4px',
-            border: 'none',
-            borderRadius: radius.sm,
-            cursor: 'pointer',
-            backgroundColor: 'transparent',
-          }}
-          title={panelOpen ? 'Collapse panel' : 'Expand panel'}
-        >
-          <span style={{
-            fontSize: '9px',
-            fontFamily: fonts.sans,
-            fontWeight: 600,
-            color: colors.textDim,
-            letterSpacing: '1.2px',
-            textTransform: 'uppercase',
-          }}>
-            Layers
-          </span>
-          <span style={{
-            fontSize: '8px',
-            color: colors.textDim,
-            lineHeight: 1,
-          }}>
-            {panelOpen ? '▲' : '▼'}
-          </span>
-        </button>
 
-        {panelOpen && <>
-        {/* ── COORDINATE group ── */}
-        <div style={{
-          display: 'flex',
-          borderRadius: radius.sm,
-          overflow: 'hidden',
-          backgroundColor: 'rgba(255,255,255,0.04)',
-        }}>
-          {([true, false] as const).map((isWorld) => {
-            const active = worldMode === isWorld
-            return (
-              <button
-                key={isWorld ? 'world' : 'vehicle'}
-                onClick={active ? undefined : toggleWorldMode}
-                style={{
-                  flex: 1,
-                  padding: '4px 0',
-                  fontSize: '10px',
-                  fontFamily: fonts.sans,
-                  fontWeight: active ? 600 : 400,
-                  border: 'none',
-                  cursor: active ? 'default' : 'pointer',
-                  backgroundColor: active ? 'rgba(0, 200, 219, 0.15)' : 'transparent',
-                  color: active ? colors.accentBlue : colors.textDim,
-                  transition: 'all 0.15s',
-                  letterSpacing: '0.3px',
-                }}
-              >
-                {isWorld ? 'World' : 'Vehicle'}
-              </button>
-            )
-          })}
-        </div>
-
-        {/* ── Divider ── */}
-        <div style={{ height: '1px', backgroundColor: colors.border, margin: '4px 4px' }} />
-
-        {SENSOR_INFO.map(({ id, label, color }) => {
-          const active = visibleSensors.has(id)
-          const cloud = sensorClouds?.get(id)
-          const pts = cloud ? cloud.pointCount.toLocaleString() : '—'
-          return (
-            <button
-              key={id}
-              onClick={() => toggleSensor(id)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '4px 8px',
-                fontSize: '11px',
+        {/* ── Collapsed: compact status bar ── */}
+        {!panelOpen && (
+          <button
+            onClick={() => setPanelOpen(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '2px 4px',
+              border: 'none',
+              borderRadius: radius.sm,
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+            }}
+          >
+            {[
+              worldMode ? 'World' : 'Vehicle',
+              (() => {
+                const active = SENSOR_INFO.filter(s => visibleSensors.has(s.id))
+                if (active.length === 0) return 'None'
+                if (active.length === 1) return active[0].label
+                return `${active[0].label}+${active.length - 1}`
+              })(),
+              { intensity: 'Int', range: 'Range', elongation: 'Elong' }[colormapMode],
+              ...(hasBoxData ? [{ off: 'Off', box: 'Boxes', model: 'Models' }[boxMode]] : []),
+            ].map((text, i, arr) => (
+              <span key={i} style={{
+                fontSize: '10px',
                 fontFamily: fonts.sans,
                 fontWeight: 500,
-                border: 'none',
-                borderRadius: radius.sm,
-                cursor: 'pointer',
-                backgroundColor: active ? 'rgba(255,255,255,0.06)' : 'transparent',
-                color: active ? colors.textPrimary : colors.textDim,
-                opacity: active ? 1 : 0.6,
-                transition: 'opacity 0.15s, background-color 0.15s',
-              }}
-            >
-              <span style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                backgroundColor: active ? color : colors.textDim,
-                display: 'inline-block',
-                flexShrink: 0,
-                boxShadow: active ? `0 0 6px ${color}` : 'none',
-              }} />
-              {label}
-              <span style={{
                 color: colors.textSecondary,
-                marginLeft: 'auto',
-                paddingLeft: 8,
-                fontFamily: fonts.mono,
-                fontSize: '10px',
               }}>
-                {pts}
+                {text}{i < arr.length - 1 && <span style={{ color: colors.textDim, margin: '0 1px' }}> · </span>}
               </span>
-            </button>
-          )
-        })}
-
-        {/* Opacity slider — hidden when all sensors off */}
-        {visibleSensors.size > 0 && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '4px 8px',
-          }}>
-            <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
-              Opacity
-            </span>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              value={Math.round(pointOpacity * 100)}
-              onChange={(e) => setPointOpacity(Number(e.target.value) / 100)}
-              style={{ width: 52, height: 2, accentColor: colors.accent }}
-            />
-            <span style={{
-              fontSize: '10px',
-              fontFamily: fonts.mono,
-              color: colors.textPrimary,
-              minWidth: 24,
-              textAlign: 'right',
-            }}>
-              {Math.round(pointOpacity * 100)}%
-            </span>
-          </div>
+            ))}
+            <span style={{ fontSize: '8px', color: colors.textDim, lineHeight: 1, marginLeft: 2 }}>▼</span>
+          </button>
         )}
 
-        {/* ── Divider ── */}
-        <div style={{ height: '1px', backgroundColor: colors.border, margin: '4px 4px' }} />
+        {/* ── Expanded panel ── */}
+        {panelOpen && <>
+          {/* ── COORDINATE section ── */}
+          <button
+            onClick={() => setPanelOpen(false)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '2px 4px',
+              border: 'none',
+              borderRadius: radius.sm,
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+            }}
+          >
+            <span style={{
+              fontSize: '9px', fontFamily: fonts.sans, fontWeight: 600,
+              color: colors.textDim, letterSpacing: '1.2px', textTransform: 'uppercase',
+            }}>
+              Coordinate
+            </span>
+            <span style={{ fontSize: '8px', color: colors.textDim, lineHeight: 1 }}>▲</span>
+          </button>
 
-        {/* ── COLORMAP group ── */}
-        <div style={{
-          fontSize: '9px',
-          fontFamily: fonts.sans,
-          fontWeight: 600,
-          color: colors.textDim,
-          letterSpacing: '1.2px',
-          textTransform: 'uppercase',
-          padding: '2px 4px 2px',
-        }}>
-          Colormap
-        </div>
-
-        <div style={{
-          display: 'flex',
-          borderRadius: radius.sm,
-          overflow: 'hidden',
-          backgroundColor: 'rgba(255,255,255,0.04)',
-        }}>
-          {([['intensity', 'Int'], ['range', 'Range'], ['elongation', 'Elong']] as [ColormapMode, string][]).map(([mode, label]) => {
-            const active = colormapMode === mode
-            return (
-              <button
-                key={mode}
-                onClick={() => setColormapMode(mode)}
-                style={{
-                  flex: 1,
-                  padding: '4px 0',
-                  fontSize: '10px',
-                  fontFamily: fonts.sans,
-                  fontWeight: active ? 600 : 400,
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: active ? 'rgba(0, 200, 219, 0.15)' : 'transparent',
-                  color: active ? colors.accentBlue : colors.textDim,
-                  transition: 'all 0.15s',
-                  letterSpacing: '0.3px',
-                }}
-              >
-                {label}
-              </button>
-            )
-          })}
-        </div>
-
-        {/* ── PERCEPTION group (hidden when no box data) ── */}
-        {hasBoxData && <>
-          {/* Divider */}
-          <div style={{ height: '1px', backgroundColor: colors.border, margin: '4px 4px' }} />
-
-          <div style={{
-            fontSize: '9px',
-            fontFamily: fonts.sans,
-            fontWeight: 600,
-            color: colors.textDim,
-            letterSpacing: '1.2px',
-            textTransform: 'uppercase',
-            padding: '2px 4px 2px',
-          }}>
-            Perception
-          </div>
-
-          {/* Segmented control: Off | Boxes | Models */}
           <div style={{
             display: 'flex',
             borderRadius: radius.sm,
             overflow: 'hidden',
             backgroundColor: 'rgba(255,255,255,0.04)',
           }}>
-            {([['off', 'Off'], ['box', 'Boxes'], ['model', 'Models']] as const).map(([mode, label]) => {
-              const active = boxMode === mode
-              const isOn = mode !== 'off'
+            {([true, false] as const).map((isWorld) => {
+              const active = worldMode === isWorld
+              return (
+                <button
+                  key={isWorld ? 'world' : 'vehicle'}
+                  onClick={active ? undefined : toggleWorldMode}
+                  style={{
+                    flex: 1, padding: '4px 0', fontSize: '10px',
+                    fontFamily: fonts.sans, fontWeight: active ? 600 : 400,
+                    border: 'none', cursor: active ? 'default' : 'pointer',
+                    backgroundColor: active ? 'rgba(0, 200, 219, 0.15)' : 'transparent',
+                    color: active ? colors.accentBlue : colors.textDim,
+                    transition: 'all 0.15s', letterSpacing: '0.3px',
+                  }}
+                >
+                  {isWorld ? 'World' : 'Vehicle'}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* ── SENSOR section ── */}
+          <div style={{ height: '1px', backgroundColor: colors.border, margin: '4px 4px' }} />
+          <div style={{
+            fontSize: '9px', fontFamily: fonts.sans, fontWeight: 600,
+            color: colors.textDim, letterSpacing: '1.2px', textTransform: 'uppercase',
+            padding: '2px 4px 2px',
+          }}>
+            Sensor
+          </div>
+
+          {SENSOR_INFO.map(({ id, label, color }) => {
+            const active = visibleSensors.has(id)
+            const cloud = sensorClouds?.get(id)
+            const pts = cloud ? cloud.pointCount.toLocaleString() : '—'
+            return (
+              <button
+                key={id}
+                onClick={() => toggleSensor(id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  padding: '4px 8px', fontSize: '11px', fontFamily: fonts.sans, fontWeight: 500,
+                  border: 'none', borderRadius: radius.sm, cursor: 'pointer',
+                  backgroundColor: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                  color: active ? colors.textPrimary : colors.textDim,
+                  opacity: active ? 1 : 0.6,
+                  transition: 'opacity 0.15s, background-color 0.15s',
+                }}
+              >
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  backgroundColor: active ? color : colors.textDim,
+                  display: 'inline-block', flexShrink: 0,
+                  boxShadow: active ? `0 0 6px ${color}` : 'none',
+                }} />
+                {label}
+                <span style={{
+                  color: colors.textSecondary, marginLeft: 'auto', paddingLeft: 8,
+                  fontFamily: fonts.mono, fontSize: '10px',
+                }}>
+                  {pts}
+                </span>
+              </button>
+            )
+          })}
+
+          {/* Opacity slider — hidden when all sensors off */}
+          {visibleSensors.size > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px' }}>
+              <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
+                Opacity
+              </span>
+              <input
+                type="range" min={10} max={100}
+                value={Math.round(pointOpacity * 100)}
+                onChange={(e) => setPointOpacity(Number(e.target.value) / 100)}
+                style={{ width: 52, height: 2, accentColor: colors.accent }}
+              />
+              <span style={{
+                fontSize: '10px', fontFamily: fonts.mono, color: colors.textPrimary,
+                minWidth: 24, textAlign: 'right',
+              }}>
+                {Math.round(pointOpacity * 100)}%
+              </span>
+            </div>
+          )}
+
+          {/* Colormap */}
+          <div style={{
+            fontSize: '9px', fontFamily: fonts.sans, fontWeight: 600,
+            color: colors.textDim, letterSpacing: '1.2px', textTransform: 'uppercase',
+            padding: '2px 4px 2px',
+          }}>
+            Colormap
+          </div>
+
+          <div style={{
+            display: 'flex', borderRadius: radius.sm, overflow: 'hidden',
+            backgroundColor: 'rgba(255,255,255,0.04)',
+          }}>
+            {([['intensity', 'Int'], ['range', 'Range'], ['elongation', 'Elong']] as [ColormapMode, string][]).map(([mode, label]) => {
+              const active = colormapMode === mode
               return (
                 <button
                   key={mode}
-                  onClick={() => setBoxMode(mode)}
+                  onClick={() => setColormapMode(mode)}
                   style={{
-                    flex: 1,
-                    padding: '4px 0',
-                    fontSize: '10px',
-                    fontFamily: fonts.sans,
-                    fontWeight: active ? 600 : 400,
-                    border: 'none',
-                    cursor: 'pointer',
-                    backgroundColor: active
-                      ? (isOn ? 'rgba(0, 200, 219, 0.15)' : 'rgba(255,255,255,0.06)')
-                      : 'transparent',
-                    color: active
-                      ? (isOn ? colors.accentBlue : colors.textPrimary)
-                      : colors.textDim,
-                    transition: 'all 0.15s',
-                    letterSpacing: '0.3px',
+                    flex: 1, padding: '4px 0', fontSize: '10px',
+                    fontFamily: fonts.sans, fontWeight: active ? 600 : 400,
+                    border: 'none', cursor: 'pointer',
+                    backgroundColor: active ? 'rgba(0, 200, 219, 0.15)' : 'transparent',
+                    color: active ? colors.accentBlue : colors.textDim,
+                    transition: 'all 0.15s', letterSpacing: '0.3px',
                   }}
                 >
                   {label}
@@ -634,70 +796,92 @@ export default function LidarViewer() {
             })}
           </div>
 
-          {boxMode !== 'off' && (<>
-            {/* Class legend */}
+          {/* ── PERCEPTION section (hidden when no box data) ── */}
+          {hasBoxData && <>
+            <div style={{ height: '1px', backgroundColor: colors.border, margin: '4px 4px' }} />
             <div style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '2px 8px',
-              padding: '4px 8px',
+              fontSize: '9px', fontFamily: fonts.sans, fontWeight: 600,
+              color: colors.textDim, letterSpacing: '1.2px', textTransform: 'uppercase',
+              padding: '2px 4px 2px',
             }}>
-              {([
-                [BoxType.TYPE_VEHICLE, 'Vehicle'],
-                [BoxType.TYPE_PEDESTRIAN, 'Pedestrian'],
-                [BoxType.TYPE_CYCLIST, 'Cyclist'],
-                [BoxType.TYPE_SIGN, 'Sign'],
-              ] as const).map(([type, label]) => (
-                <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '1px',
-                    backgroundColor: BOX_TYPE_COLORS[type],
-                    display: 'inline-block',
-                    flexShrink: 0,
-                  }} />
-                  <span style={{
-                    fontSize: '9px',
-                    fontFamily: fonts.sans,
-                    color: colors.textSecondary,
-                  }}>
-                    {label}
-                  </span>
-                </div>
-              ))}
+              Perception
             </div>
 
-            {/* Trail slider */}
+            {/* Segmented control: Off | Boxes | Models */}
             <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '4px 8px',
+              display: 'flex', borderRadius: radius.sm, overflow: 'hidden',
+              backgroundColor: 'rgba(255,255,255,0.04)',
             }}>
-              <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
-                Trail
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={50}
-                value={trailLength}
-                onChange={(e) => setTrailLength(Number(e.target.value))}
-                style={{ width: 52, height: 2, accentColor: colors.accentBlue }}
-              />
-              <span style={{
-                fontSize: '10px',
-                fontFamily: fonts.mono,
-                color: colors.textPrimary,
-                minWidth: 16,
-                textAlign: 'right',
-              }}>
-                {trailLength}
-              </span>
+              {([['off', 'Off'], ['box', 'Boxes'], ['model', 'Models']] as const).map(([mode, label]) => {
+                const active = boxMode === mode
+                const isOn = mode !== 'off'
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setBoxMode(mode)}
+                    style={{
+                      flex: 1, padding: '4px 0', fontSize: '10px',
+                      fontFamily: fonts.sans, fontWeight: active ? 600 : 400,
+                      border: 'none', cursor: 'pointer',
+                      backgroundColor: active
+                        ? (isOn ? 'rgba(0, 200, 219, 0.15)' : 'rgba(255,255,255,0.06)')
+                        : 'transparent',
+                      color: active
+                        ? (isOn ? colors.accentBlue : colors.textPrimary)
+                        : colors.textDim,
+                      transition: 'all 0.15s', letterSpacing: '0.3px',
+                    }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
             </div>
-          </>)}
-        </>}
+
+            {boxMode !== 'off' && (<>
+              {/* Class legend */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', padding: '4px 8px' }}>
+                {([
+                  [BoxType.TYPE_VEHICLE, 'Vehicle'],
+                  [BoxType.TYPE_PEDESTRIAN, 'Pedestrian'],
+                  [BoxType.TYPE_CYCLIST, 'Cyclist'],
+                  [BoxType.TYPE_SIGN, 'Sign'],
+                ] as const).map(([type, label]) => (
+                  <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{
+                      width: 6, height: 6, borderRadius: '1px',
+                      backgroundColor: BOX_TYPE_COLORS[type],
+                      display: 'inline-block', flexShrink: 0,
+                    }} />
+                    <span style={{ fontSize: '9px', fontFamily: fonts.sans, color: colors.textSecondary }}>
+                      {label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Trail slider — only in world mode */}
+              {worldMode && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px' }}>
+                  <span style={{ fontSize: '10px', fontFamily: fonts.sans, fontWeight: 500, color: colors.textSecondary, whiteSpace: 'nowrap' }}>
+                    Trail
+                  </span>
+                  <input
+                    type="range" min={0} max={50}
+                    value={trailLength}
+                    onChange={(e) => setTrailLength(Number(e.target.value))}
+                    style={{ width: 52, height: 2, accentColor: colors.accentBlue }}
+                  />
+                  <span style={{
+                    fontSize: '10px', fontFamily: fonts.mono, color: colors.textPrimary,
+                    minWidth: 16, textAlign: 'right',
+                  }}>
+                    {trailLength}
+                  </span>
+                </div>
+              )}
+            </>)}
+          </>}
         </>}
       </div>
 

@@ -6,6 +6,7 @@
  * Styled to match the frosted glass panels used elsewhere in the UI.
  */
 
+import { useState } from 'react'
 import { colors, fonts } from '../../theme'
 import { BEV_SIZE, BEV_ZOOM_LABELS } from './BevMinimap'
 
@@ -21,9 +22,13 @@ export default function BevOverlay({
   zoomIndex: number
   onToggleZoom: () => void
 }) {
+  const [hovered, setHovered] = useState(false)
+
   return (
     <div
       onClick={onToggleZoom}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         position: 'absolute',
         top: MARGIN_TOP,
@@ -34,8 +39,11 @@ export default function BevOverlay({
         overflow: 'hidden',
         pointerEvents: 'auto',
         cursor: 'pointer',
-        border: `1px solid ${colors.border}`,
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
+        border: `1px solid ${hovered ? colors.accentBlue : colors.border}`,
+        boxShadow: hovered
+          ? `0 2px 12px rgba(0, 200, 219, 0.25), 0 0 0 1px ${colors.accentBlue}`
+          : '0 2px 8px rgba(0, 0, 0, 0.3)',
+        transition: 'border-color 0.2s, box-shadow 0.2s',
       }}
     >
       {/* The actual WebGL canvas */}
@@ -46,35 +54,6 @@ export default function BevOverlay({
         style={{ width: BEV_SIZE, height: BEV_SIZE, display: 'block' }}
       />
 
-      {/* Radar rings */}
-      {[0.33, 0.66].map((scale) => (
-        <div
-          key={scale}
-          style={{
-            position: 'absolute',
-            top: `${50 - scale * 50}%`,
-            left: `${50 - scale * 50}%`,
-            width: `${scale * 100}%`,
-            height: `${scale * 100}%`,
-            borderRadius: '50%',
-            border: `1px solid ${colors.borderSubtle}`,
-            pointerEvents: 'none',
-          }}
-        />
-      ))}
-
-      {/* Crosshair lines */}
-      <div style={{
-        position: 'absolute', top: 0, left: '50%',
-        width: '1px', height: '100%',
-        background: colors.borderSubtle, pointerEvents: 'none',
-      }} />
-      <div style={{
-        position: 'absolute', top: '50%', left: 0,
-        width: '100%', height: '1px',
-        background: colors.borderSubtle, pointerEvents: 'none',
-      }} />
-
       {/* Zoom level label */}
       <div style={{
         position: 'absolute', bottom: 12, left: '50%',
@@ -82,7 +61,8 @@ export default function BevOverlay({
       }}>
         <span style={{
           fontSize: '9px', fontFamily: fonts.mono, fontWeight: 500,
-          color: colors.textDim,
+          color: hovered ? colors.textPrimary : colors.textDim,
+          transition: 'color 0.2s',
         }}>
           {BEV_ZOOM_LABELS[zoomIndex]}
         </span>

@@ -63,8 +63,13 @@ function App() {
   //   Shift+← / →  = prev/next segment
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const el = e.target as HTMLElement
+      const tag = el?.tagName
+      // Block shortcuts only for text-like inputs; allow range/checkbox/radio
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (tag === 'INPUT' && (el as HTMLInputElement).type !== 'range') return
+      // Blur focused buttons so Space doesn't re-click them
+      if (tag === 'BUTTON') (el as HTMLButtonElement).blur()
 
       // Shift+Arrow: segment navigation (works even during loading)
       if (e.shiftKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
@@ -147,6 +152,47 @@ function App() {
           <Timeline />
         </footer>
       )}
+
+      {/* Credit bar */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 8,
+        padding: '3px 0',
+        fontSize: '9px',
+        fontFamily: fonts.sans,
+        color: colors.textDim,
+        background: colors.bgDeep,
+        borderTop: `1px solid ${colors.borderSubtle}`,
+        flexShrink: 0,
+      }}>
+        <span>
+          Built by{' '}
+          <a href="https://happyhj.github.io/" target="_blank" rel="noopener noreferrer"
+            style={{ color: colors.textSecondary, textDecoration: 'none', transition: 'color 0.15s' }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = colors.textPrimary }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = colors.textSecondary }}
+          >Heejae Kim</a>
+        </span>
+        <span style={{ opacity: 0.4 }}>·</span>
+        <a href="https://www.linkedin.com/in/heejaekm/" target="_blank" rel="noopener noreferrer"
+          style={{ color: colors.textDim, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 3, transition: 'color 0.15s' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = colors.textSecondary }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = colors.textDim }}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+          LinkedIn
+        </a>
+        <span style={{ opacity: 0.4 }}>·</span>
+        <a href="https://github.com/happyhj/waymo-perception-studio" target="_blank" rel="noopener noreferrer"
+          style={{ color: colors.accent, textDecoration: 'none', transition: 'color 0.15s, opacity 0.15s', opacity: 0.7 }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
+        >
+          ⭐ Star on GitHub
+        </a>
+      </div>
     </div>
   )
 }
@@ -826,8 +872,10 @@ function ShortcutHints() {
   useEffect(() => {
     // Toggle with ? key
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const el = e.target as HTMLElement
+      const tag = el?.tagName
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (tag === 'INPUT' && (el as HTMLInputElement).type !== 'range') return
       if (e.key === '?') {
         e.preventDefault()
         setVisible((v) => !v)
