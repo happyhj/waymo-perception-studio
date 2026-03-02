@@ -1,52 +1,48 @@
-# Perception Studio
+<p align="center">
+  <img src="assets/banner.png" alt="Perception Studio" width="720" />
+</p>
 
-In-browser perception explorer for [Waymo Open Dataset](https://waymo.com/open/) v2.0.1.
-No setup, no server — just drop Parquet files and explore.
+<h1 align="center">Perception Studio</h1>
 
-**[Live Demo → heejaekim.github.io/waymo-perception-studio](https://heejaekim.github.io/waymo-perception-studio)**
+<p align="center">
+  Browser-native 3D perception explorer for Waymo Open Dataset v2.0 Perception
+</p>
 
-## Features
+<p align="center">
+  No install. No server. Just drag, drop, and explore.
+</p>
 
-- **LiDAR point cloud** — 5 sensors, ~168K pts/frame, turbo colormap, per-sensor toggle
-- **3D bounding boxes** — wireframe or GLB models (car/pedestrian/cyclist), tracking-ID colors
-- **Trajectory trails** — past N frames of object motion as fading polylines
-- **5 camera views** — synchronized JPEG panels with POV switching
-- **Camera frustums** — FOV visualization in 3D view with hover sync
-- **Timeline** — scrubber, play/pause, speed control (0.5×–4×), buffer bar
-- **Multi-segment** — dropdown selector with metadata (location, time, weather)
-- **Drag & drop** — drop a folder of Parquet files, no server needed
-- **Keyboard shortcuts** — `← →` frame, `J L` ±10, `Space` play/pause, `Shift+← →` segment, `?` help
+<p align="center">
+  <img src="assets/screenshot.png" alt="Perception Studio Screenshot" width="720" />
+</p>
 
-## Download Data
+## Highlights
 
-You need [Waymo Open Dataset v2.0.1](https://waymo.com/open/) Parquet files. Access is free with a Google account.
+- **See what the car sees** — explore real self-driving scenes in 3D with LiDAR point clouds and 5 synchronized camera views
+- **3D object models** — vehicles, pedestrians, and cyclists rendered as 3D models with color-coded tracking
+- **Camera POV mode** — click a camera to jump into its viewpoint in 3D, compare what the sensor sees side by side
+- **Cross-modal linking** — hover over a camera detection and its 3D counterpart lights up, and vice versa
 
-### Prerequisites
+**Already have Waymo Open Dataset v2.0 Perception downloaded?** Just open the demo, drop your files, and go.
+
+<p align="center">
+  <a href="https://heejaekim.github.io/waymo-perception-studio"><strong>Try Live Demo →</strong></a>
+</p>
+
+## Get Started
+
+You need [Waymo Open Dataset v2.0 Perception](https://waymo.com/open/) Parquet files (free with a Google account).
+
+<details>
+<summary><strong>Download script</strong></summary>
 
 ```bash
 # Install Google Cloud CLI: https://cloud.google.com/sdk/docs/install
 gcloud auth login
-```
 
-### Quick start — download 1 segment (~500 MB)
-
-```bash
-BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
-SEGMENT="10203656353524179475_7625_000_7645_000"
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar lidar_camera_projection camera_image"
-
-for C in $COMPONENTS; do
-  mkdir -p waymo_data/$C
-  gsutil cp "$BUCKET/$C/$SEGMENT.parquet" "waymo_data/$C/"
-done
-```
-
-### Download multiple segments
-
-```bash
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
 COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar lidar_camera_projection camera_image"
-N=3
+N=1  # Number of segments to download (~500 MB each)
 
 SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" | head -$N | xargs -I{} basename {} .parquet)
 
@@ -59,24 +55,11 @@ for SEG in $SEGMENTS; do
 done
 ```
 
-### Expected folder structure
+</details>
 
-```
-waymo_data/
-├── vehicle_pose/              ← ego vehicle world transform
-├── lidar/                     ← range images from 5 LiDAR sensors
-├── lidar_box/                 ← 3D bounding boxes with tracking IDs
-├── lidar_calibration/         ← LiDAR extrinsic transforms
-├── lidar_camera_projection/   ← LiDAR→camera pixel mapping (for RGB colormap)
-├── camera_image/              ← JPEGs from 5 cameras
-└── camera_calibration/        ← camera intrinsic/extrinsic
-```
+Then drag & drop the `waymo_data/` folder into the app.
 
-Each segment is a **20-second driving clip** at **10 Hz** (~200 frames). A single segment is ~570 MB across 7 components.
-
-Drag & drop the `waymo_data/` folder into the app. Multiple segments are auto-detected with a dropdown selector.
-
-## For Developers
+## Dev Setup
 
 ```bash
 git clone https://github.com/heejaekim/waymo-perception-studio.git
@@ -85,24 +68,13 @@ npm install
 npm run dev
 ```
 
-Place `waymo_data/` in the project root — the dev server auto-discovers segments on startup.
+## Built With
 
-```bash
-npm run build   # type-check + production build
-npm run lint    # ESLint
-npm test        # Vitest
-```
-
-## Tech Stack
-
-- **UI**: React 19 + Vite 7 + TypeScript 5.9
-- **3D**: @react-three/fiber + drei
-- **Data**: hyparquet + hyparquet-compressors (browser-native Parquet with BROTLI)
-- **Workers**: 3 LiDAR + 2 camera workers for parallel row group decompression
+React 19 · TypeScript · Three.js · R3F · Vite · Zustand · hyparquet · Web Workers
 
 ## Browser Support
 
-Chrome / Edge recommended (folder drag & drop via File System Access API). Firefox / Safari work with individual file drag & drop.
+Chrome / Edge recommended (folder drag & drop + folder picker). Firefox / Safari support folder drag & drop only.
 
 ## License
 
