@@ -27,11 +27,10 @@ You just want to drop in the files and see what's inside.
 - **3D object models**: vehicles, pedestrians, and cyclists rendered as 3D models with color-coded tracking
 - **Camera POV mode**: click a camera to jump into its viewpoint in 3D, compare what the sensor sees side by side
 - **Cross-modal linking**: hover over a camera detection and its 3D counterpart lights up, and vice versa
-
 <table>
   <tr>
-    <td><img src="https://private-user-images.githubusercontent.com/3903575/556982733-8ca4aa6e-5818-4d2f-bed2-58687dd825d8.gif" alt="LiDAR point cloud driving scene" /></td>
-    <td><img src="https://private-user-images.githubusercontent.com/3903575/556980659-0c99b33b-59d8-4fcb-9a47-cba7bdaa51fa.gif" alt="3D model rendering and POV switching" /></td>
+    <td><img src="https://github.com/user-attachments/assets/8ca4aa6e-5818-4d2f-bed2-58687dd825d8" alt="LiDAR point cloud driving scene" /></td>
+    <td><img src="https://github.com/user-attachments/assets/0c99b33b-59d8-4fcb-9a47-cba7bdaa51fa" alt="3D model rendering and POV switching" /></td>
   </tr>
 </table>
 
