@@ -28,16 +28,16 @@ You just want to drop in the files and see what's inside.
 - **Camera POV mode**: click a camera to jump into its viewpoint in 3D, compare what the sensor sees side by side
 - **Cross-modal linking**: hover over a camera detection and its 3D counterpart lights up, and vice versa
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/8ca4aa6e-5818-4d2f-bed2-58687dd825d8" alt="LiDAR point cloud driving scene" width="720" />
-</p>
-
 <table>
   <tr>
-    <td><img src="https://github.com/user-attachments/assets/0c99b33b-59d8-4fcb-9a47-cba7bdaa51fa" alt="3D model rendering and POV switching" /></td>
-    <td><img src="https://github.com/user-attachments/assets/f8c9f708-dce1-4313-8de8-1da3ac727788" alt="Bounding boxes and POV transition" /></td>
+    <td><img src="https://private-user-images.githubusercontent.com/3903575/556982733-8ca4aa6e-5818-4d2f-bed2-58687dd825d8.gif" alt="LiDAR point cloud driving scene" /></td>
+    <td><img src="https://private-user-images.githubusercontent.com/3903575/556980659-0c99b33b-59d8-4fcb-9a47-cba7bdaa51fa.gif" alt="3D model rendering and POV switching" /></td>
   </tr>
 </table>
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/a6361d24-00a6-4e24-9365-210f9a94277c" autoplay loop muted playsinline width="720"></video>
+</p>
 
 ## 🚀 Try It With Your Waymo Data
 
