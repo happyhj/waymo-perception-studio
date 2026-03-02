@@ -70,8 +70,7 @@ const _povPoseQuat = new THREE.Quaternion()
 const _povWorldQuat = new THREE.Quaternion()
 const _povVehicleQuat = new THREE.Quaternion()
 
-/** Temp vector for return animation lookAt interpolation */
-const _returnLookAt = new THREE.Vector3()
+/** Temp vector for return animation direction */
 const _returnDir = new THREE.Vector3()
 
 function PovController({
