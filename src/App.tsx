@@ -347,12 +347,12 @@ function Header() {
 // Download Guide — collapsible shell script
 // ---------------------------------------------------------------------------
 
-const DOWNLOAD_SCRIPT = `# Requires: Google Cloud SDK (gsutil)
-# https://cloud.google.com/sdk/docs/install
+const DOWNLOAD_SCRIPT = `# Install Google Cloud CLI: https://cloud.google.com/sdk/docs/install
+gcloud auth login
 
 BUCKET="gs://waymo_open_dataset_v_2_0_1/training"
-COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar camera_image"
-N=3  # number of segments to download
+COMPONENTS="vehicle_pose lidar_calibration camera_calibration lidar_box lidar lidar_camera_projection camera_image"
+N=1  # Number of segments to download (~500 MB each)
 
 SEGMENTS=$(gsutil ls "$BUCKET/vehicle_pose/*.parquet" | head -$N | xargs -I{} basename {} .parquet)
 
