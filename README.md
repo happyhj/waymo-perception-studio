@@ -2,17 +2,9 @@
   <img src="assets/banner.png" alt="Perception Studio" width="720" />
 </p>
 
-<h1 align="center" style="border: none;">Perception Studio</h1>
-
 <p align="center">
   Browser-native 3D perception explorer for Waymo Open Dataset v2.0 Perception<br/>
   No install. No server. Just drag, drop, and explore.
-</p>
-
-<p align="center">
-  <a href="https://heejaekim.github.io/waymo-perception-studio"><img src="https://img.shields.io/badge/Live_Demo-Try_it-00d4aa?style=for-the-badge" alt="Live Demo" /></a>&nbsp;
-  <a href="https://github.com/heejaekim/waymo-perception-studio"><img src="https://img.shields.io/github/stars/heejaekim/waymo-perception-studio?style=for-the-badge&color=yellow" alt="GitHub Stars" /></a>&nbsp;
-  <a href="https://github.com/heejaekim/waymo-perception-studio/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License" /></a>
 </p>
 
 <p align="center">
